@@ -74,20 +74,32 @@ def unit(deg):
     return np.array([math.sin(r), math.cos(r)])
 
 
-def angles(cx, tilt=180, armL=(-37, -9), armR=(37, 9), legL=(-14.5, -5), legR=(14.5, 5)):
-    """関節角度のパラメータ. 腰の高さは足が床に付くよう自動で決める."""
-    return {"cx": cx, "tilt": tilt, "armL": armL, "armR": armR, "legL": legL, "legR": legR}
+def angles(cx, tilt=180, armL=(-37, -9), armR=(37, 9), legL=(-14.5, -5), legR=(14.5, 5),
+           armk=1.0, bend=0.0, noodle=0.0):
+    """関節角度のパラメータ. 腰の高さは足が床に付くよう自動で決める.
+    armk: 腕の長さの倍率, bend: 胴のしなり (px), noodle: 腕のぐにゃり (px). 普通の人は 1, 0, 0."""
+    return {"cx": cx, "tilt": tilt, "armL": armL, "armR": armR, "legL": legL, "legR": legR,
+            "armk": armk, "bend": bend, "noodle": noodle}
+
+
+def bow(pts, amount):
+    """折れ線の両端はそのまま, 真ん中ほど横にふくらませる."""
+    if abs(amount) < 1e-6:
+        return pts
+    v = pts[-1] - pts[0]
+    n = np.array([-v[1], v[0]]) / (np.linalg.norm(v) + 1e-9)
+    return pts + n * (amount * np.sin(np.linspace(0, math.pi, len(pts))))[:, None]
 
 
 def build_pose(p):
     drop = max(LEN["thigh"] * unit(p[k][0])[1] + LEN["shin"] * unit(p[k][1])[1] for k in ("legL", "legR"))
     hip = np.array([p["cx"], FLOOR_Y - drop * S])
     neck = hip + unit(p["tilt"]) * LEN["torso"] * S
-    torso = resample([neck, hip])
+    torso = bow(resample([neck, hip]), p["bend"])
     q = {"torso": torso}
-    for k in ("armL", "armR"):
-        e = torso[1] + unit(p[k][0]) * LEN["upper"] * S
-        q[k] = chain([torso[1], e, e + unit(p[k][1]) * LEN["lower"] * S])
+    for k, sgn in (("armL", 1), ("armR", -1)):
+        e = torso[1] + unit(p[k][0]) * LEN["upper"] * S * p["armk"]
+        q[k] = bow(chain([torso[1], e, e + unit(p[k][1]) * LEN["lower"] * S * p["armk"]]), sgn * p["noodle"])
     for k in ("legL", "legR"):
         e = hip + unit(p[k][0]) * LEN["thigh"] * S
         q[k] = chain([hip, e, e + unit(p[k][1]) * LEN["shin"] * S])
@@ -278,7 +290,39 @@ def floor(d):
 
 
 # ------------------------------------------------------------------ 構成
-def build(out_path, previews=()):
+def add_long_part(add, audio, xs, poses):
+    """長い版だけの追加パート: 普通の動き2つ → すこーーーしだけ変な動き2つ. 最後のポーズを返す."""
+    one_leg = [angles(x, armL=(-150, 195), armR=(150, -195), legL=(-5, -2), legR=(75, 5)) for x in xs]
+    side = [angles(x, tilt=205, armL=(-135, 200), armR=(170, -160), legL=(-22, -12), legR=(22, 12)) for x in xs]
+    vpose = dict(armL=(-150, 200), armR=(150, -200), legL=(-20, -10), legR=(20, 10))
+    longer = [angles(x, armk=1.35, **vpose) for x in xs]
+
+    def move(src, dst, cap, jiggle=0.0):
+        def fn(img, d, t, u):
+            header(d, TITLE)
+            floor(d)
+            for i in range(3):
+                p = lerp_angles(src[i], dst[i], u * 1.5)
+                if jiggle:  # 胴と腕がちょっとだけぐにゃぐにゃ (最後は元に戻る)
+                    w = math.sin(2 * math.pi * 2 * u) * math.sin(math.pi * u)
+                    p["bend"] = jiggle * w
+                    p["noodle"] = jiggle * 0.9 * w
+                draw_picto(d, build_pose(p))
+            caption(d, cap, pop=t / 0.25)
+        return fn
+
+    add(1.9, move(poses, one_leg, "そろって片足立ち"), lambda t: audio.pop(t + 0.15, 620, 0.3))
+    add(1.9, move(one_leg, side, "体を横に倒して"), lambda t: audio.whoosh(t + 0.1, 0.5, 0.2))
+    # ここから, すこーーーしだけ変
+    add(2.0, move(side, longer, "腕を少し伸ばして"), lambda t: audio.sweep(t + 0.3, 300, 420, 0.5, 0.15))
+    add(2.2, move(longer, longer, "体をやわらかく", jiggle=45),
+        lambda t: audio.sweep(t + 0.1, 350, 300, 1.6, 0.12, wobble=0.3))
+    return longer
+
+
+
+def build(out_path, previews=(), long=False):
+    """long=True: 普通の動きを増やし, 「ちょっとだけ変」を経てから伸びるパートへ行く版."""
     xs = [230, 540, 850]
     stand = [angles(x) for x in xs]
     tpose = [angles(x, armL=(-140, 210), armR=(140, -210), legL=(-20, -10), legR=(20, 10)) for x in xs]
@@ -343,8 +387,12 @@ def build(out_path, previews=()):
 
     add(2.1, natural2, lambda t: [audio.pop(t + 0.1 + k * 0.15, 700 + 90 * k, 0.3) for k in range(3)])
 
+    last = poses
+    if long:
+        last = add_long_part(add, audio, xs, poses)
+
     # --- ここから無理な動き
-    posed = [build_pose(p) for p in poses]
+    posed = [build_pose(p) for p in last]
 
     def to_stretch(img, d, t, u):
         header(d, TITLE)
@@ -431,6 +479,8 @@ def build(out_path, previews=()):
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    out = args[0] if args else "video2_ginkgo.mp4"
-    build(out, previews=[8.0, 12.0, 14.5, 15.3, 16.2, 17.2, 18.2, 20.5]
-          if "--preview" in sys.argv else [])
+    long = "--long" in sys.argv
+    out = args[0] if args else ("video2_ginkgo_long.mp4" if long else "video2_ginkgo.mp4")
+    previews = [6.8, 7.5, 8.6, 9.5, 10.6, 11.6, 12.6, 13.4, 14.2, 15.0, 16.5, 27.0] if long else \
+        [8.0, 12.0, 14.5, 15.3, 16.2, 17.2, 18.2, 20.5]
+    build(out, previews=previews if "--preview" in sys.argv else [], long=long)
