@@ -8,8 +8,7 @@ import sys
 
 import numpy as np
 
-from common import (INK, W, Audio, caption, clamp01, ease, ease_out_back, font, header, mix, render, text,
-                    tsukkomi)
+from common import INK, Audio, caption, clamp01, ease_out_back, header, mix, render, text, tsukkomi
 
 TITLE = "フラッシュモブ振付会議"
 TOTAL = 150
@@ -46,12 +45,13 @@ CROWD_ROLES = [
 SLOW = 4  # ゆっくり紹介する人数
 # ---------------------------------------------------------------------------------
 
-CX, CY = 540, 890
+CX, CY = 530, 560  # 舞台の中心 (画面左側)
 SPACING = 0.25  # ワールド座標での間隔 (ヒマワリ配置)
 RW = 0.1  # ワールド座標での◯の半径
-UNIT = 400  # ズーム1.0のとき 1.0 = 400px
+UNIT = 350  # ズーム1.0のとき 1.0 = 350px
 GOLDEN = math.pi * (3 - math.sqrt(5))
-STAGE = (60, 420, 1020, 1360)
+STAGE = (110, 140, 950, 980)
+PANEL_X, PANEL_W = 1435, 820  # 右側 (人数・テロップ) の中心と幅
 FLOOR = (233, 224, 206)
 
 POS = np.array([[SPACING * math.sqrt(k + 0.3) * math.cos(k * GOLDEN),
@@ -110,16 +110,16 @@ def draw_stage(d, z):
         y = CY + k * step
         if STAGE[1] < y < STAGE[3]:
             d.line((STAGE[0] + 3, y, STAGE[2] - 3, y), fill=(218, 207, 186), width=2)
-    text(d, (CX, STAGE[3] + 45), "▼ 客席 ▼", 38, fill=(120, 110, 95))
+    text(d, (CX, STAGE[3] + 45), "▼ 客席 ▼", 36, fill=(120, 110, 95))
 
 
 def draw_counter(d, n, bump):
-    x1, y1, x2, y2 = 640, 200, 1040, 360
-    d.rounded_rectangle((x1, y1, x2, y2), radius=22, fill=(255, 255, 255), outline=INK, width=5)
-    text(d, ((x1 + x2) / 2, y1 + 38), "配置人数", 38, fill=(110, 100, 90))
-    size = 84 * (1 + 0.18 * bump)
+    x1, y1, x2, y2 = PANEL_X - 300, 170, PANEL_X + 300, 420
+    d.rounded_rectangle((x1, y1, x2, y2), radius=26, fill=(255, 255, 255), outline=INK, width=5)
+    text(d, ((x1 + x2) / 2, y1 + 50), "配置人数", 46, fill=(110, 100, 90))
+    size = 120 * (1 + 0.18 * bump)
     col = mix(INK, (210, 30, 40), clamp01((n - 40) / 110))
-    text(d, ((x1 + x2) / 2, y1 + 105), f"{n}人", size, fill=col)
+    text(d, ((x1 + x2) / 2, y1 + 160), f"{n}人", size, fill=col)
 
 
 def draw_people(d, times, t, z):
@@ -138,6 +138,11 @@ def draw_people(d, times, t, z):
                  stroke=max(1, int(3 * z)), stroke_fill=INK)
 
 
+def cap(d, s, **kw):
+    """右側のテロップ."""
+    caption(d, s, x=PANEL_X, y=650, width=PANEL_W, **kw)
+
+
 def build(out_path, with_tsukkomi=False, previews=()):
     audio = Audio(40)
     scenes = []
@@ -150,9 +155,10 @@ def build(out_path, with_tsukkomi=False, previews=()):
         header(d, TITLE)
         draw_stage(d, 1.0)
         a = ease_out_back(t / 0.5)
-        d.rounded_rectangle((110, 720, 970, 1060), radius=30, fill=(255, 255, 255), outline=INK, width=5)
-        text(d, (W / 2, 890), "フォーメーション\n説明会", int(96 * (0.5 + 0.5 * a)))
-        caption(d, "結婚式の余興です", sub="（新郎新婦にはナイショ）", pop=t / 0.3)
+        d.rounded_rectangle((CX - 400, CY - 160, CX + 400, CY + 160), radius=30, fill=(255, 255, 255),
+                            outline=INK, width=5)
+        text(d, (CX, CY), "フォーメーション\n説明会", int(96 * (0.5 + 0.5 * a)))
+        cap(d, "結婚式の余興です", sub="（新郎新婦にはナイショ）", pop=t / 0.3)
 
     scenes.append((t_title, title))
     audio.pop(0.05, 440)
@@ -180,12 +186,12 @@ def build(out_path, with_tsukkomi=False, previews=()):
             r = RW * UNIT * z
             d.line((x, y - r - 12, x, y - r - 60), fill=(210, 30, 40), width=6)
             d.polygon([(x - 14, y - r - 26), (x + 14, y - r - 26), (x, y - r - 6)], fill=(210, 30, 40))
-            caption(d, f"これが{name}さん" if k == 0 else f"こちら{name}さん", sub=f"（{role}）",
-                    pop=(t - times[k]) / 0.25)
+            cap(d, f"これが{name}さん" if k == 0 else f"こちら{name}さん", sub=f"（{role}）",
+                pop=(t - times[k]) / 0.25)
         elif name:
-            caption(d, f"{name}さん（{role}）", size=58)
+            cap(d, f"{name}さん\n（{role}）")
         else:
-            caption(d, role, size=62)
+            cap(d, role)
 
     scenes.append((t_end_place - t_title, placing))
 
@@ -205,7 +211,7 @@ def build(out_path, with_tsukkomi=False, previews=()):
         draw_stage(d, z)
         draw_people(d, times, 999, z)
         draw_counter(d, TOTAL, 0)
-        caption(d, "以上、150名で踊ります！", sub="（招待客リストより）", pop=t / 0.3)
+        cap(d, "以上、150名で\n踊ります！", sub="（招待客リストより）", pop=t / 0.3)
 
     scenes.append((hold, final))
     audio.chime(t_end_place)
@@ -213,7 +219,7 @@ def build(out_path, with_tsukkomi=False, previews=()):
     if with_tsukkomi:
         def punch(img, d, t, u):
             final(img, d, hold, 1)
-            tsukkomi(img, t / 2.5, "参列者全員\n参加させるんか！", base_size=120)
+            tsukkomi(img, t / 2.5, "参列者全員 参加させるんか！", base_size=120)
 
         scenes.append((2.6, punch))
         audio.don(t_end_place + hold)

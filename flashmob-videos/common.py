@@ -9,7 +9,7 @@ import imageio_ffmpeg
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1080, 1920  # 縦型 (TikTok / Reels / Shorts)
+W, H = 1920, 1080  # 横長 16:9
 FPS = 30
 SR = 44100
 
@@ -58,24 +58,25 @@ def text(d, xy, s, size, fill=INK, stroke=0, stroke_fill=(255, 255, 255), anchor
                      stroke_width=stroke, stroke_fill=stroke_fill, spacing=size * 0.25)
 
 
-def caption(d, s, y=1640, size=64, sub=None, pop=1.0):
-    """画面下部のテロップ. pop は 0→1 の出現アニメ用."""
+def caption(d, s, x=W / 2, y=H - 120, size=64, sub=None, pop=1.0, width=None):
+    """テロップ. (x, y) が中心, width は枠の最小幅. pop は 0→1 の出現アニメ用."""
     if not s:
         return
     size = size * (0.6 + 0.4 * ease_out_back(pop))
     f = font(size)
-    box = d.multiline_textbbox((W / 2, y), s, font=f, anchor="mm", align="center", spacing=size * 0.25)
+    box = d.multiline_textbbox((x, y), s, font=f, anchor="mm", align="center", spacing=size * 0.25)
     pad = 34
-    d.rounded_rectangle((min(box[0] - pad, 60), box[1] - pad, max(box[2] + pad, W - 60), box[3] + pad),
+    half = max((width or 0) / 2, (box[2] - box[0]) / 2 + pad)
+    d.rounded_rectangle((x - half, box[1] - pad, x + half, box[3] + pad),
                         radius=28, fill=(255, 255, 255), outline=INK, width=5)
-    text(d, (W / 2, y), s, size)
+    text(d, (x, y), s, size)
     if sub:
-        text(d, (W / 2, box[3] + pad + 50), sub, 42, fill=(110, 100, 90))
+        text(d, (x, box[3] + pad + 50), sub, 42, fill=(110, 100, 90))
 
 
 def header(d, s):
-    d.rectangle((0, 0, W, 170), fill=INK)
-    text(d, (W / 2, 95), s, 60, fill=(255, 255, 255))
+    d.rectangle((0, 0, W, 110), fill=INK)
+    text(d, (W / 2, 58), s, 54, fill=(255, 255, 255))
 
 
 def tsukkomi(img, u, word="無理やん！", base_size=175):
@@ -85,7 +86,7 @@ def tsukkomi(img, u, word="無理やん！", base_size=175):
     img.paste(Image.blend(img, dark, 0.55 * clamp01(t / 0.12)))
     d = ImageDraw.Draw(img)
     rng = np.random.default_rng(int(t * 12))  # 集中線はコマ撮り風に12fpsで揺らす
-    cx, cy = W / 2, H * 0.47
+    cx, cy = W / 2, H * 0.5
     for k in range(90):
         a = 2 * math.pi * k / 90 + rng.uniform(-0.02, 0.02)
         r0 = rng.uniform(330, 520)
