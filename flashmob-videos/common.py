@@ -78,7 +78,7 @@ def header(d, s):
     text(d, (W / 2, 95), s, 60, fill=(255, 255, 255))
 
 
-def tsukkomi(img, u, word="無理やん！"):
+def tsukkomi(img, u, word="無理やん！", base_size=175):
     """u: 0→1. 背景を暗くし, 集中線 + ドーンと文字を出す."""
     t = u * 2.5  # 秒換算 (シーン長 2.5s 前提の目安)
     dark = Image.new("RGB", img.size, (0, 0, 0))
@@ -99,10 +99,10 @@ def tsukkomi(img, u, word="無理やん！"):
     dx = rng.uniform(-1, 1) * 28 * shake
     dy = rng.uniform(-1, 1) * 28 * shake
     tilt = -6
-    size = int(175 * scale)
+    size = int(base_size * scale)
     layer = Image.new("RGBA", (W * 2, 900), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
-    ld.text((W, 450), word, font=font(size), anchor="mm", fill=(255, 238, 60),
+    ld.multiline_text((W, 450), word, font=font(size), anchor="mm", align="center", fill=(255, 238, 60),
             stroke_width=max(6, size // 11), stroke_fill=(210, 20, 30))
     layer = layer.rotate(tilt, resample=Image.BICUBIC)
     img.paste(layer, (int(-W / 2 + dx), int(cy - 450 + dy)), layer)
