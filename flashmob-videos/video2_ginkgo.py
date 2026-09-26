@@ -10,7 +10,7 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from common import INK, W, Audio, caption, clamp01, ease, ease_out_back, header, mix, render, text
+from common import W, Audio, caption, clamp01, ease, ease_out_back, header, mix, render, text
 
 TITLE = "3人でイチョウマーク作ります"
 PICTO = (28, 56, 104)  # ピクトグラムの色
@@ -26,6 +26,9 @@ S = 1.6  # 人の大きさ
 LEN = {"torso": 150, "upper": 73, "lower": 63, "thigh": 88, "shin": 85}
 
 MARK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "utokyo_mark.png")
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "utokyo_logo.png")
+LOGO_W = 260  # 右上に出す東大マーク (文字付き) の幅
+LOGO_ASPECT = 1430 / 1000  # utokyo_logo.png の 高さ/幅
 MARK_SIZE = 780  # 画面上のマークの直径
 MARK_X0, MARK_Y0 = 540 - MARK_SIZE / 2, 930 - MARK_SIZE / 2
 
@@ -245,16 +248,29 @@ def paste_mark(img, cx, cy, size, alpha=1.0, shadow=0.0):
     img.paste(m, (x, y), m)
 
 
-def sparkle(d, t):
-    rng = np.random.default_rng(5)
-    for k in range(14):
-        x, y = rng.uniform(120, 960), rng.uniform(420, 1350)
-        ph = (t * 2.2 + rng.uniform()) % 1
-        s = 26 * math.sin(math.pi * ph)
-        if s > 1:
-            d.polygon([(x, y - s), (x + s * 0.25, y - s * 0.25), (x + s, y), (x + s * 0.25, y + s * 0.25),
-                       (x, y + s), (x - s * 0.25, y + s * 0.25), (x - s, y), (x - s * 0.25, y - s * 0.25)],
-                      fill=(250, 200, 40))
+_logo = {}
+
+
+def paste_logo(img, card, x0, y0, v):
+    """白い台紙 + 東大マーク (文字付き) を, 透明度 v で貼る."""
+    if "img" not in _logo:
+        lg = Image.open(LOGO_PATH).convert("RGBA")
+        _logo["img"] = lg.resize((LOGO_W, int(LOGO_W * lg.height / lg.width)), Image.LANCZOS)
+    lg = _logo["img"]
+    layer = card.copy()
+    mask = Image.new("L", card.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, card.size[0] - 1, card.size[1] - 1), radius=24, fill=int(235 * v))
+    layer.putalpha(mask)
+    shadow = Image.new("RGBA", (card.size[0] + 40, card.size[1] + 40), (0, 0, 0, 0))
+    sm = Image.new("L", shadow.size, 0)
+    ImageDraw.Draw(sm).rounded_rectangle((20, 20, card.size[0] + 20, card.size[1] + 20), radius=24, fill=int(60 * v))
+    shadow.putalpha(sm.filter(ImageFilter.GaussianBlur(12)))
+    x, y = int(x0 - 30), int(y0 - 25)
+    img.paste(shadow, (x - 12, y - 6), shadow)
+    img.paste(layer, (x, y), layer)
+    logo = lg.copy()
+    logo.putalpha(lg.getchannel("A").point(lambda a: int(a * v)))
+    img.paste(logo, (int(x0), int(y0)), logo)
 
 
 def floor(d):
@@ -302,7 +318,7 @@ def build(out_path, previews=()):
             hop = max(0.0, math.sin(t * 7 - i * 0.9)) * 30 * (t < 1.2)
             draw_picto(d, shifted(build_pose(p), hop))
         text(d, (W / 2, 360), "東大の\nイチョウマーク", int(86 * (0.6 + 0.4 * ease_out_back(t / 0.4))), stroke=6)
-        caption(d, "この3人で作ります", sub="（よろしくお願いします）", pop=t / 0.25)
+        caption(d, "この3人で作ります", pop=t / 0.25)
 
     add(2.2, intro, lambda t: [audio.pop(t + k * 0.25, 600 + 120 * k) for k in range(3)])
 
@@ -323,7 +339,7 @@ def build(out_path, previews=()):
         floor(d)
         for i in range(3):
             draw_picto(d, build_pose(lerp_angles(tpose[i], poses[i], u * 1.5)))
-        caption(d, "それぞれポーズ", sub="（ここまでは普通）" if u > 0.4 else None, pop=t / 0.25)
+        caption(d, "それぞれポーズ", pop=t / 0.25)
 
     add(2.1, natural2, lambda t: [audio.pop(t + 0.1 + k * 0.15, 700 + 90 * k, 0.3) for k in range(3)])
 
@@ -335,7 +351,7 @@ def build(out_path, previews=()):
         floor(d)
         for i in range(3):
             draw_picto(d, interp_pose(posed[i], stretch[i], ease_out_back(u * 1.3, 1.2), lag=0.1))
-        caption(d, "腕と胴を伸ばして\n脚を縮めます", sub="（伸び縮みします）" if u > 0.35 else None, pop=t / 0.25)
+        caption(d, "腕と胴を伸ばして\n脚を縮めます", pop=t / 0.25)
 
     add(2.2, to_stretch, lambda t: [audio.sweep(t + 0.1, 180, 900, 0.7, 0.35, wobble=0.25),
                                     audio.sweep(t + 0.8, 700, 250, 0.4, 0.25)])
@@ -345,83 +361,69 @@ def build(out_path, previews=()):
         floor(d)
         for i in range(3):
             draw_picto(d, interp_pose(stretch[i], bent[i], u, lag=0.3))
-        caption(d, "関節を逆に曲げて", sub="（曲がります）" if u > 0.35 else None, pop=t / 0.25)
-        if u > 0.5:
-            text(d, (W / 2, 290), "ボキッ", 80, fill=(210, 30, 40), stroke=6)
+        caption(d, "関節を逆に曲げて", pop=t / 0.25)
 
-    add(2.3, to_bent, lambda t: [audio.crack(t + 0.8 + k * 0.13) for k in range(6)])
+    add(2.3, to_bent, lambda t: audio.sweep(t + 0.3, 500, 250, 1.2, 0.2, wobble=0.3))
 
     def to_mark(img, d, t, u):
         header(d, TITLE)
         floor(d)
         for i in draw_order:
             draw_picto(d, interp_pose(bent[i], mark[i], u, lag=0.35))
-        caption(d, "しならせて\n巻きつけて…", sub="（1人は丸くなります）" if u > 0.4 else None, pop=t / 0.25)
+        caption(d, "しならせて\n巻きつけて…", pop=t / 0.25)
 
     add(3.0, to_mark, lambda t: audio.sweep(t, 300, 1200, 2.4, 0.18, wobble=0.4))
 
     def colored(img, d, v):
-        """色が付いてマークっぽくなる. v: 0→1."""
+        """色が付いてマークになる. v: 0→1."""
         paste_mark(img, 540, 930, MARK_SIZE, alpha=0.55 * v)
         d = ImageDraw.Draw(img)
         for i in draw_order:
             draw_picto(d, mark[i], color=mix(PICTO, final_color[i], v))
         return d
 
-    def done(img, d, t, u):
+    def formed(img, d, t, u):
+        """形が完成したところで一瞬止める (まだ色は付かない)."""
         header(d, TITLE)
         floor(d)
-        d = colored(img, d, ease(t / 0.8))
-        sparkle(d, t)
-        caption(d, "完成！", size=80, pop=t / 0.3)
+        colored(img, d, 0)
+        caption(d, "しならせて\n巻きつけて…")
 
-    add(1.6, done, lambda t: audio.chime(t))
+    add(0.8, formed)
 
-    card = (870, 360, 300)  # 本物カードの中心 x, y と大きさ
+    color_dur = 3.2
 
-    def reveal(img, d, t, u):
-        """本物のマークが重なって浮き上がる → 右上に移動して横に並ぶ."""
+    def logo_in(img, d, v):
+        """右上に東大マーク (文字付き) が浮き出てくる. v: 0→1."""
+        if v <= 0:
+            return
+        x0, y0 = 1040 - LOGO_W - 30, 200 + 40 * (1 - v)
+        h = LOGO_W * LOGO_ASPECT
+        card = Image.new("RGBA", (int(LOGO_W + 60), int(h + 50)), (255, 255, 255, int(235 * v)))
+        paste_logo(img, card, x0, y0, v)
+
+    def coloring(img, d, t, u):
         header(d, TITLE)
         floor(d)
-        d = colored(img, d, 1)
-        if t < 1.3:  # 浮き上がる
-            a = ease(t / 0.4)
-            lift = ease(t / 0.6)
-            paste_mark(img, 540, 930 - 20 * lift, MARK_SIZE * (1 + 0.04 * lift), alpha=0.95 * a, shadow=lift)
-            if t > 0.4:
-                text(d, (540, 930), "本物", 120, fill=(255, 255, 255), stroke=10, stroke_fill=INK)
-        else:  # 右上へ移動
-            k = ease((t - 1.3) / 0.6)
-            cx = 540 + (card[0] - 540) * k
-            cy = 910 + (card[1] - 910) * k
-            size = MARK_SIZE * 1.04 + (card[2] - MARK_SIZE * 1.04) * k
-            if k >= 1:
-                draw_card(img, d)
-            else:
-                paste_mark(img, cx, cy, size, alpha=0.95, shadow=1 - k)
-        caption(d, "東大のイチョウマーク！", pop=t / 0.3)
+        v = ease(t / (color_dur - 0.3))
+        d = colored(img, d, v)
+        logo_in(img, d, v)
+        if t > 1.0:
+            caption(d, "完成！\n東大のイチョウマーク！", pop=(t - 1.0) / 0.3)
+        else:
+            caption(d, "しならせて\n巻きつけて…")
 
-    def draw_card(img, d):
-        cx, cy, size = card
-        h = size / 2 + 20
-        d.rounded_rectangle((cx - h, cy - h, cx + h, cy + h + 60), radius=26, fill=(255, 255, 255),
-                            outline=INK, width=5)
-        paste_mark(img, cx, cy, size)
-        text(d, (cx, cy + h + 25), "本物", 44)
-
-    add(2.4, reveal, lambda t: [audio.don(t + 0.05, 0.4), audio.chime(t + 1.4, 0.2)])
+    add(color_dur, coloring, lambda t: [audio.sweep(t, 400, 800, 2.5, 0.08), audio.chime(t + 1.0)])
 
     def hold(img, d, t, u):
         header(d, TITLE)
         floor(d)
         d = colored(img, d, 1)
-        draw_card(img, d)
-        text(d, (820, 1370), "▲ 3人", 48)
-        text(d, (330, 330), "※関節は\n考慮していません", 50, fill=(210, 30, 40), stroke=6)
-        caption(d, "東大のイチョウマーク！")
+        logo_in(img, d, 1)
+        caption(d, "完成！\n東大のイチョウマーク！")
 
     # 最後はそのまま止めておく (ここで撮影側がツッコミを入れる)
-    add(3.0, hold, lambda t: audio.pop(t, 330))
+    add(3.0, hold)
 
     total = render(scenes, out_path, audio, preview_times=previews)
     print(f"wrote {out_path} ({total:.1f}s)")
@@ -430,5 +432,5 @@ def build(out_path, previews=()):
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     out = args[0] if args else "video2_ginkgo.mp4"
-    build(out, previews=[1.0, 3.0, 5.5, 7.5, 9.0, 11.5, 13.0, 15.0, 15.8, 17.0, 18.5, 20.0]
+    build(out, previews=[8.0, 12.0, 14.5, 15.3, 16.2, 17.2, 18.2, 20.5]
           if "--preview" in sys.argv else [])
