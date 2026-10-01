@@ -10,9 +10,9 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from common import BG, H, Audio, caption, clamp01, ease, ease_out_back, header, mix, render, text
+from common import BG, H, Audio, caption, clamp01, ease, header, mix, render
 
-TITLE = "3人でイチョウマーク作ります"
+TITLE = "フォーメーション手順"  # 何を作るかは最後まで出さない
 PICTO = (28, 56, 104)  # ピクトグラムの色
 YELLOW = (250, 189, 3)
 BLUE = (24, 126, 196)
@@ -323,6 +323,11 @@ def cap(s, y=850, **kw):
 
 
 # ------------------------------------------------------------------ 構成
+def step(audio):
+    """手順が変わるたびに鳴らす控えめな音 (効果音でボケない)."""
+    return lambda t: audio.pop(t + 0.05, 660, 0.18)
+
+
 def add_long_part(add, audio, xs, poses):
     """長い版だけの追加パート: 普通の動き2つ → すこーーーしだけ変な動き2つ. 最後のポーズを返す."""
     one_leg = [angles(x, armL=(-150, 195), armR=(150, -195), legL=(-5, -2), legR=(75, 5)) for x in xs]
@@ -342,12 +347,11 @@ def add_long_part(add, audio, xs, poses):
             cap(label, pop=t / 0.25)
         return fn
 
-    add(1.9, move(poses, one_leg, "そろって片足立ち"), lambda t: audio.pop(t + 0.15, 620, 0.3))
-    add(1.9, move(one_leg, side, "体を横に倒して"), lambda t: audio.whoosh(t + 0.1, 0.5, 0.2))
+    add(1.9, move(poses, one_leg, "片足で立ちます"), step(audio))
+    add(1.9, move(one_leg, side, "体を横に倒します"), step(audio))
     # ここから, すこーーーしだけ変
-    add(2.0, move(side, longer, "腕を少し伸ばして"), lambda t: audio.sweep(t + 0.3, 300, 420, 0.5, 0.15))
-    add(2.2, move(longer, longer, "体をやわらかく", jiggle=45),
-        lambda t: audio.sweep(t + 0.1, 350, 300, 1.6, 0.12, wobble=0.3))
+    add(2.0, move(side, longer, "腕を少し伸ばします"), step(audio))
+    add(2.2, move(longer, longer, "体をやわらかくします", jiggle=45), step(audio))
     return longer
 
 
@@ -379,22 +383,12 @@ def build(out_path, previews=(), long=False):
         scenes.append((dur, staged(fn)))
         tc[0] += dur
 
-    def shifted(q, dy):
-        return {k: v + [0, -dy] for k, v in q.items()}
-
     def intro(img, d, t, u):
         for i in range(3):
-            p = dict(stand[i])
-            if i == 1:  # 真ん中の人は手を振る
-                w = math.sin(t * 9)
-                p["armR"] = (150 + 12 * w, 170 + 25 * w)
-            hop = max(0.0, math.sin(t * 7 - i * 0.9)) * 30 * (t < 1.2)
-            draw_picto(d, shifted(build_pose(p), hop))
-        text(main()[1], (PANEL_X, 420), "東大の\nイチョウマーク", int(100 * (0.6 + 0.4 * ease_out_back(t / 0.4))),
-             stroke=6)
-        cap("この3人で作ります", pop=t / 0.25)
+            draw_picto(d, build_pose(stand[i]))
+        cap("3人で1つの形を作ります", pop=t / 0.25)
 
-    add(2.2, intro, lambda t: [audio.pop(t + k * 0.25, 600 + 120 * k) for k in range(3)])
+    add(2.2, intro, step(audio))
 
     # --- ここまでは普通の動き (関節角度で動かすので無理がない)
     def natural1(img, d, t, u):
@@ -402,16 +396,16 @@ def build(out_path, previews=(), long=False):
             v = clamp01(u * 1.5)
             p = lerp_angles(stand[i], raising[i], v * 2) if v < 0.5 else lerp_angles(raising[i], tpose[i], v * 2 - 1)
             draw_picto(d, build_pose(p))
-        cap("まずは両手を上げて", pop=t / 0.25)
+        cap("両手を上げます", pop=t / 0.25)
 
-    add(1.9, natural1, lambda t: audio.whoosh(t + 0.1, 0.5, 0.2))
+    add(1.9, natural1, step(audio))
 
     def natural2(img, d, t, u):
         for i in range(3):
             draw_picto(d, build_pose(lerp_angles(tpose[i], poses[i], u * 1.5)))
-        cap("それぞれポーズ", pop=t / 0.25)
+        cap("それぞれポーズをとります", pop=t / 0.25)
 
-    add(2.1, natural2, lambda t: [audio.pop(t + 0.1 + k * 0.15, 700 + 90 * k, 0.3) for k in range(3)])
+    add(2.1, natural2, step(audio))
 
     last = poses
     if long:
@@ -422,25 +416,24 @@ def build(out_path, previews=(), long=False):
 
     def to_stretch(img, d, t, u):
         for i in range(3):
-            draw_picto(d, interp_pose(posed[i], stretch[i], ease_out_back(u * 1.3, 1.2), lag=0.1))
-        cap("腕と胴を伸ばして\n脚を縮めます", pop=t / 0.25)
+            draw_picto(d, interp_pose(posed[i], stretch[i], u, lag=0.1))
+        cap("腕と胴を伸ばし\n脚を縮めます", pop=t / 0.25)
 
-    add(2.2, to_stretch, lambda t: [audio.sweep(t + 0.1, 180, 900, 0.7, 0.35, wobble=0.25),
-                                    audio.sweep(t + 0.8, 700, 250, 0.4, 0.25)])
+    add(2.2, to_stretch, step(audio))
 
     def to_bent(img, d, t, u):
         for i in range(3):
             draw_picto(d, interp_pose(stretch[i], bent[i], u, lag=0.3))
-        cap("関節を逆に曲げて", pop=t / 0.25)
+        cap("関節を逆に曲げます", pop=t / 0.25)
 
-    add(2.3, to_bent, lambda t: audio.sweep(t + 0.3, 500, 250, 1.2, 0.2, wobble=0.3))
+    add(2.3, to_bent, step(audio))
 
     def to_mark(img, d, t, u):
         for i in draw_order:
             draw_picto(d, interp_pose(bent[i], mark[i], u, lag=0.35))
-        cap("しならせて\n巻きつけて…", pop=t / 0.25)
+        cap("しならせて\n巻きつけます", pop=t / 0.25)
 
-    add(3.0, to_mark, lambda t: audio.sweep(t, 300, 1200, 2.4, 0.18, wobble=0.4))
+    add(3.0, to_mark, step(audio))
 
     def colored(img, d, v):
         """色が付いてマークになる. v: 0→1."""
@@ -453,7 +446,7 @@ def build(out_path, previews=(), long=False):
     def formed(img, d, t, u):
         """形が完成したところで一瞬止める (まだ色は付かない)."""
         colored(img, d, 0)
-        cap("しならせて\n巻きつけて…")
+        cap("しならせて\n巻きつけます")
 
     add(0.8, formed)
 
@@ -474,16 +467,16 @@ def build(out_path, previews=(), long=False):
         d = colored(img, d, v)
         logo_in(v)
         if t > 1.0:
-            cap("完成！\n東大のイチョウマーク！", pop=(t - 1.0) / 0.3)
+            cap("東京大学の\nイチョウマークです", pop=(t - 1.0) / 0.3)
         else:
-            cap("しならせて\n巻きつけて…")
+            cap("しならせて\n巻きつけます")
 
-    add(color_dur, coloring, lambda t: [audio.sweep(t, 400, 800, 2.5, 0.08), audio.chime(t + 1.0)])
+    add(color_dur, coloring, lambda t: audio.chime(t + 1.0, 0.2))
 
     def hold(img, d, t, u):
         d = colored(img, d, 1)
         logo_in(1)
-        cap("完成！\n東大のイチョウマーク！")
+        cap("東京大学の\nイチョウマークです")
 
     # 最後はそのまま止めておく (ここで撮影側がツッコミを入れる)
     add(3.0, hold)
