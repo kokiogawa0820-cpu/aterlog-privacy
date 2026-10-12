@@ -10,7 +10,7 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from common import BG, H, Audio, caption, clamp01, ease, header, mix, render
+from common import BG, H, INK, Audio, caption, clamp01, ease, header, mix, render, text
 
 TITLE = "フォーメーション手順"  # 何を作るかは最後まで出さない
 PICTO = (28, 56, 104)  # ピクトグラムの色
@@ -220,7 +220,8 @@ def interp_pose(a, b, u, lag=0.25):
     return out
 
 
-def draw_picto(d, q, color=PICTO):
+def draw_picto(d, q, color=PICTO, tag=None, tag_alpha=1.0):
+    """ピクトグラムを描く. tag があれば頭の上に名札 (例: 「山田さん」) を出す."""
     q = connect(q)
     r = LIMB_W / 2
     for name in ["legL", "legR", "armL", "armR", "torso"]:
@@ -234,6 +235,9 @@ def draw_picto(d, q, color=PICTO):
         d.ellipse((x - tr, y - tr, x + tr, y + tr), fill=color)
     hx, hy = head_pos(q)
     d.ellipse((hx - HEAD_R, hy - HEAD_R, hx + HEAD_R, hy + HEAD_R), fill=color)
+    if tag and tag_alpha > 0:
+        text(d, (hx, hy - HEAD_R - 48), tag, 48, fill=mix(BG, INK, tag_alpha), stroke=5,
+             stroke_fill=mix(BG, (255, 255, 255), tag_alpha))
 
 
 _mark_cache = {}
@@ -328,7 +332,7 @@ def step(audio):
     return lambda t: audio.pop(t + 0.05, 660, 0.18)
 
 
-def add_long_part(add, audio, xs, poses):
+def add_long_part(add, audio, xs, poses, tag):
     """長い版だけの追加パート: 普通の動き2つ → すこーーーしだけ変な動き2つ. 最後のポーズを返す."""
     one_leg = [angles(x, armL=(-150, 195), armR=(150, -195), legL=(-5, -2), legR=(75, 5)) for x in xs]
     side = [angles(x, tilt=205, armL=(-135, 200), armR=(170, -160), legL=(-22, -12), legR=(22, 12)) for x in xs]
@@ -343,7 +347,7 @@ def add_long_part(add, audio, xs, poses):
                     w = math.sin(2 * math.pi * 2 * u) * math.sin(math.pi * u)
                     p["bend"] = jiggle * w
                     p["noodle"] = jiggle * 0.9 * w
-                draw_picto(d, build_pose(p))
+                draw_picto(d, build_pose(p), tag=tag(i))
             cap(label, pop=t / 0.25)
         return fn
 
@@ -356,8 +360,34 @@ def add_long_part(add, audio, xs, poses):
 
 
 
-def build(out_path, previews=(), long=False):
-    """long=True: 普通の動きを増やし, 「ちょっとだけ変」を経てから伸びるパートへ行く版."""
+# 席次表から選ぶ3人 (左から). 個人名なのでコードには書かず, data/picks.txt (1行に1人) に置く.
+# ファイルがなければ, PICK_TABLES の各卓で席次表の先頭に載っている人を選ぶ.
+PICKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "picks.txt")
+PICK_TABLES = ["A", "C", "B"]
+
+
+def choose_picks(guests):
+    import seating
+    if os.path.exists(PICKS_PATH):
+        with open(PICKS_PATH, encoding="utf-8") as f:
+            names = [line.strip() for line in f if line.strip()]
+        return [seating.find(guests, n) for n in names[:3]]
+    return [next(g for g in guests if g.table == t) for t in PICK_TABLES]
+
+
+def pick_guests(seating_path=None):
+    import seating
+    try:
+        guests, _ = seating.load(seating_path or seating.DEFAULT_PATH)
+        return choose_picks(guests)
+    except (FileNotFoundError, KeyError, StopIteration) as e:
+        print("名札なしで作ります:", e)
+        return None
+
+
+def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2):
+    """動画2のシーン列を作る. 効果音は t0 秒からの位置に入れる. (scenes, 終了時刻) を返す.
+    long=True: 普通の動きを増やし, 「ちょっとだけ変」を経てから伸びるパートへ行く版."""
     xs = [230, 540, 850]
     stand = [angles(x) for x in xs]
     tpose = [angles(x, armL=(-140, 210), armR=(140, -210), legL=(-20, -10), legR=(20, 10)) for x in xs]
@@ -373,9 +403,11 @@ def build(out_path, previews=(), long=False):
     mark = [pose_yellow(), pose_blue(), pose_ring()]
     final_color = [YELLOW, BLUE, BLUE]
     draw_order = [2, 1, 0]  # 輪 → 青い葉 → 黄色い葉 (茎が輪の上に来る)
-    audio = Audio(40)
     scenes = []
-    tc = [0.0]
+    tc = [t0]
+
+    def tag(i):
+        return f"{picks[i].surname}さん" if picks else None
 
     def add(dur, fn, sfx=None):
         if sfx:
@@ -385,52 +417,53 @@ def build(out_path, previews=(), long=False):
 
     def intro(img, d, t, u):
         for i in range(3):
-            draw_picto(d, build_pose(stand[i]))
-        cap("3人で1つの形を作ります", pop=t / 0.25)
+            draw_picto(d, build_pose(stand[i]), tag=tag(i))
+        who = "\n".join(f"{p.surname}さん（{p.role}）" for p in picks) if picks else None
+        cap("3人で1つの形を作ります", sub=who, pop=t / 0.25)
 
-    add(2.2, intro, step(audio))
+    add(intro_dur, intro, step(audio))
 
     # --- ここまでは普通の動き (関節角度で動かすので無理がない)
     def natural1(img, d, t, u):
         for i in range(3):  # 肘を曲げながら上げる (途中で手が隣の人に当たらないように)
             v = clamp01(u * 1.5)
             p = lerp_angles(stand[i], raising[i], v * 2) if v < 0.5 else lerp_angles(raising[i], tpose[i], v * 2 - 1)
-            draw_picto(d, build_pose(p))
+            draw_picto(d, build_pose(p), tag=tag(i))
         cap("両手を上げます", pop=t / 0.25)
 
     add(1.9, natural1, step(audio))
 
     def natural2(img, d, t, u):
         for i in range(3):
-            draw_picto(d, build_pose(lerp_angles(tpose[i], poses[i], u * 1.5)))
+            draw_picto(d, build_pose(lerp_angles(tpose[i], poses[i], u * 1.5)), tag=tag(i))
         cap("それぞれポーズをとります", pop=t / 0.25)
 
     add(2.1, natural2, step(audio))
 
     last = poses
     if long:
-        last = add_long_part(add, audio, xs, poses)
+        last = add_long_part(add, audio, xs, poses, tag)
 
     # --- ここから無理な動き
     posed = [build_pose(p) for p in last]
 
     def to_stretch(img, d, t, u):
         for i in range(3):
-            draw_picto(d, interp_pose(posed[i], stretch[i], u, lag=0.1))
+            draw_picto(d, interp_pose(posed[i], stretch[i], u, lag=0.1), tag=tag(i))
         cap("腕と胴を伸ばし\n脚を縮めます", pop=t / 0.25)
 
     add(2.2, to_stretch, step(audio))
 
     def to_bent(img, d, t, u):
         for i in range(3):
-            draw_picto(d, interp_pose(stretch[i], bent[i], u, lag=0.3))
+            draw_picto(d, interp_pose(stretch[i], bent[i], u, lag=0.3), tag=tag(i))
         cap("関節を逆に曲げます", pop=t / 0.25)
 
     add(2.3, to_bent, step(audio))
 
     def to_mark(img, d, t, u):
         for i in draw_order:
-            draw_picto(d, interp_pose(bent[i], mark[i], u, lag=0.35))
+            draw_picto(d, interp_pose(bent[i], mark[i], u, lag=0.35), tag=tag(i), tag_alpha=1 - clamp01(u / 0.4))
         cap("しならせて\n巻きつけます", pop=t / 0.25)
 
     add(3.0, to_mark, step(audio))
@@ -480,15 +513,21 @@ def build(out_path, previews=(), long=False):
 
     # 最後はそのまま止めておく (ここで撮影側がツッコミを入れる)
     add(3.0, hold)
+    return scenes, tc[0]
 
+
+def build(out_path, previews=(), long=False, seating_path=None):
+    audio = Audio(40)
+    scenes, _ = make_scenes(audio, long=long, picks=pick_guests(seating_path))
     total = render(scenes, out_path, audio, preview_times=previews)
     print(f"wrote {out_path} ({total:.1f}s)")
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = [a for i, a in enumerate(sys.argv[1:], 1) if not a.startswith("--") and sys.argv[i - 1] != "--seating"]
     long = "--long" in sys.argv
     out = args[0] if args else ("video2_ginkgo_long.mp4" if long else "video2_ginkgo.mp4")
     previews = [6.8, 7.5, 8.6, 9.5, 10.6, 11.6, 12.6, 13.4, 14.2, 15.0, 16.5, 27.0] if long else \
         [8.0, 12.0, 14.5, 15.3, 16.2, 17.2, 18.2, 20.5]
-    build(out, previews=previews if "--preview" in sys.argv else [], long=long)
+    seat_path = sys.argv[sys.argv.index("--seating") + 1] if "--seating" in sys.argv else None
+    build(out, previews=previews if "--preview" in sys.argv else [], long=long, seating_path=seat_path)

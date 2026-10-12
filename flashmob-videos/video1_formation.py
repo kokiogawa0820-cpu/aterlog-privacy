@@ -1,235 +1,160 @@
-"""動画1: ◯(=人)を紹介しながら配置 → どんどん加速して150人 → (ツッコミ「参列者全員参加させるんか！」は撮影側で)
+"""動画1: 席次表どおりの会場で, ゲストが1人ずつ席から立ってダンスフロアへ → どんどん加速して全員に.
+(ツッコミ「参列者全員参加させるんか！」は撮影側で. --tsukkomi を付けると文字のツッコミも入れる)
 
---tsukkomi を付けると最後に文字のツッコミ演出も入れる.
+使い方: python3 video1_formation.py [出力.mp4] [--seating 席次表.xlsx] [--preview] [--tsukkomi]
 """
-import colorsys
-import math
 import sys
 
 import numpy as np
 
-from common import INK, Audio, caption, clamp01, ease_out_back, header, mix, render, text, tsukkomi
+from common import INK, Audio, caption, clamp01, ease, header, mix, render, text, tsukkomi
+import hall
+import seating
 
-TITLE = "フラッシュモブ振付会議"
-TOTAL = 150
-
-# ---- 名前と肩書き (仮). 名前が決まったらここを書き換えてください -------------------
-# 先頭4人はゆっくり紹介, 5人目以降は加速しながら紹介される.
-NAMED = [
-    ("田中", "新郎の友人代表"),
-    ("佐藤", "新郎の大学の同期"),
-    ("鈴木", "新婦の幼なじみ"),
-    ("高橋", "言い出しっぺ"),
-    ("伊藤", "新郎の会社の後輩"),
-    ("渡辺", "新婦の職場の先輩"),
-    ("山本", "新郎の上司"),
-    ("中村", "新婦の上司"),
-    ("小林", "新郎のいとこ"),
-    ("加藤", "新婦のおじ"),
-]
-# 名前のない人は, 何人目かに応じてこの肩書きがテロップに出る (境目の人数, 肩書き)
-CROWD_ROLES = [
-    (14, "新郎の親戚"),
-    (22, "新婦の親戚"),
-    (32, "新郎の会社の人たち"),
-    (45, "新婦の会社の人たち"),
-    (60, "新郎新婦の恩師"),
-    (72, "受付の人"),
-    (82, "司会者"),
-    (90, "カメラマン"),
-    (104, "新郎のおばあちゃん"),
-    (118, "新婦のおばあちゃん"),
-    (135, "ご近所の方"),
-    (TOTAL, "その他の参列者のみなさん"),
-]
-SLOW = 4  # ゆっくり紹介する人数
-# ---------------------------------------------------------------------------------
-
-CX, CY = 530, 560  # 舞台の中心 (画面左側)
-SPACING = 0.25  # ワールド座標での間隔 (ヒマワリ配置)
-RW = 0.1  # ワールド座標での◯の半径
-UNIT = 350  # ズーム1.0のとき 1.0 = 350px
-GOLDEN = math.pi * (3 - math.sqrt(5))
-STAGE = (110, 140, 950, 980)
-PANEL_X, PANEL_W = 1435, 820  # 右側 (人数・テロップ) の中心と幅
-FLOOR = (233, 224, 206)
-
-POS = np.array([[SPACING * math.sqrt(k + 0.3) * math.cos(k * GOLDEN),
-                 SPACING * math.sqrt(k + 0.3) * math.sin(k * GOLDEN) * 0.95] for k in range(TOTAL)])
-COLORS = [tuple(int(c * 255) for c in colorsys.hsv_to_rgb((k * 0.618) % 1, 0.62, 0.9)) for k in range(TOTAL)]
+TITLE = "フラッシュモブ 当日の流れ"
+SLOW_TABLES = ["H", "I", "B", "C"]  # 最初にゆっくり紹介する人の卓 (各卓でフロアに一番近い人)
+NAMED_FAST = 8  # その次に名前を出しながら加速する人数
 
 
-def role_of(k):
-    if k < len(NAMED):
-        return NAMED[k]
-    for limit, role in CROWD_ROLES:
-        if k < limit:
-            return None, role
-    return None, CROWD_ROLES[-1][1]
+def order_guests(h):
+    """登場順: ゆっくり紹介する4人 → フロアに近い人から順に (少しばらつかせる)."""
+    first = [h.nearest_to_floor(t) for t in SLOW_TABLES if any(g.table == t for g in h.guests)]
+    rng = np.random.default_rng(11)
+    rest = [i for i in range(len(h.guests)) if i not in first]
+    dist = {i: np.linalg.norm(h.seat[i] - hall.FLOOR_C) * rng.uniform(0.8, 1.2) for i in rest}
+    return first + sorted(rest, key=dist.get)
 
 
-def placement_times(t0):
-    """各人が置かれる時刻. 最初の数人はゆっくり→名前ありの人は加速→あとは肩書きごとに一定時間で一気に."""
-    times, t = [], t0
-    for k in range(SLOW):
+def start_times(n, t0, slow):
+    """立ち上がる時刻. 最初はゆっくり, そこから等比的に加速 (最速で1フレームに4人)."""
+    times, t, dt = [], t0, 1.7
+    for k in range(n):
         times.append(t)
-        t += 1.45
-    dt = 0.62
-    for k in range(SLOW, len(NAMED)):
-        times.append(t)
+        if k == slow - 1:
+            dt = 0.75
+        elif k >= slow:
+            dt = max(1 / 30 / 4, dt * 0.86)
         t += dt
-        dt *= 0.82
-    start = len(NAMED)
-    for j, (limit, _) in enumerate(CROWD_ROLES):
-        n = max(0, min(limit, TOTAL) - start)
-        span = 0.55 - 0.15 * j / max(1, len(CROWD_ROLES) - 1)  # 肩書き1つあたりの表示時間
-        times += [t + span * i / max(1, n) for i in range(n)]
-        t += span
-        start += n
-    times += [t] * (TOTAL - len(times))
-    return np.array(times[:TOTAL])
-
-
-def zoom_for(n):
-    radius = SPACING * math.sqrt(max(n, 1) + 0.3) + RW * 1.4
-    return min(1.0, 1.08 / radius)
-
-
-def to_px(p, z):
-    return CX + p[0] * UNIT * z, CY + p[1] * UNIT * z
-
-
-def draw_stage(d, z):
-    d.rounded_rectangle(STAGE, radius=24, fill=FLOOR, outline=INK, width=4)
-    step = 0.3 * UNIT * z
-    k0 = int((STAGE[2] - CX) / step) + 1
-    for k in range(-k0, k0 + 1):
-        x = CX + k * step
-        if STAGE[0] < x < STAGE[2]:
-            d.line((x, STAGE[1] + 3, x, STAGE[3] - 3), fill=(218, 207, 186), width=2)
-        y = CY + k * step
-        if STAGE[1] < y < STAGE[3]:
-            d.line((STAGE[0] + 3, y, STAGE[2] - 3, y), fill=(218, 207, 186), width=2)
-    text(d, (CX, STAGE[3] + 45), "▼ 客席 ▼", 36, fill=(120, 110, 95))
+    return np.array(times)
 
 
 def draw_counter(d, n, bump):
-    x1, y1, x2, y2 = PANEL_X - 300, 170, PANEL_X + 300, 420
-    d.rounded_rectangle((x1, y1, x2, y2), radius=26, fill=(255, 255, 255), outline=INK, width=5)
-    text(d, ((x1 + x2) / 2, y1 + 50), "配置人数", 46, fill=(110, 100, 90))
-    size = 120 * (1 + 0.18 * bump)
-    col = mix(INK, (210, 30, 40), clamp01((n - 40) / 110))
-    text(d, ((x1 + x2) / 2, y1 + 160), f"{n}人", size, fill=col)
-
-
-def draw_people(d, times, t, z):
-    for k in range(TOTAL):
-        age = t - times[k]
-        if age < 0:
-            break
-        s = ease_out_back(age / 0.25)
-        x, y = to_px(POS[k], z)
-        r = RW * UNIT * z * s
-        d.ellipse((x - r + 3, y - r + 5, x + r + 3, y + r + 5), fill=(200, 190, 170))
-        d.ellipse((x - r, y - r, x + r, y + r), fill=COLORS[k], outline=INK, width=max(2, int(4 * z)))
-        name = role_of(k)[0]
-        if name and r > 12:
-            text(d, (x, y), name, r * (0.55 if len(name) > 2 else 0.68), fill=(255, 255, 255),
-                 stroke=max(1, int(3 * z)), stroke_fill=INK)
+    x, y1, y2 = hall.PANEL_X, 170, 420
+    d.rounded_rectangle((x - 210, y1, x + 210, y2), radius=26, fill=(255, 255, 255), outline=INK, width=5)
+    text(d, (x, y1 + 50), "配置人数", 46, fill=(110, 100, 90))
+    text(d, (x, y1 + 160), f"{n}人", 120 * (1 + 0.15 * bump), fill=mix(INK, (210, 30, 40), clamp01((n - 40) / 110)))
 
 
 def cap(d, s, **kw):
-    """右側のテロップ."""
-    caption(d, s, x=PANEL_X, y=650, width=PANEL_W, **kw)
+    caption(d, s, x=hall.PANEL_X, y=640, width=hall.PANEL_W, size=46, **kw)
 
 
-def build(out_path, with_tsukkomi=False, previews=()):
-    audio = Audio(40)
+def build(out_path, seating_path=seating.DEFAULT_PATH, with_tsukkomi=False, previews=()):
+    guests, tables = seating.load(seating_path)
+    h = hall.Hall(guests, tables)
+    order = order_guests(h)
+    n = len(order)
+    slow = len([t for t in SLOW_TABLES if any(g.table == t for g in guests)])
+    spots = hall.dance_spots(n)
+    t_title = 2.4
+    t_zoom = 1.0
+    times = start_times(n, t_title + t_zoom, slow)
+    colors = {i: hall.table_color(guests[i].table) for i in range(len(guests))}
+    movers = {i: hall.Mover(h.seat[i], spots[k], times[k], seed=k) for k, i in enumerate(order)}
+    t_all = max(m.arrive() for m in movers.values()) + 0.4
+    hold = 3.0
+
+    wide = hall.Camera((710, 590), 1.0)
+    close = hall.Camera((700, 330), 1.9)
+
+    def camera(t):
+        if t < t_title:
+            return wide
+        if t < t_title + t_zoom:
+            return wide.lerp(close, ease((t - t_title) / t_zoom))
+        # 立つ人が増えてきたら, 会場全体が見えるまで引く
+        k = np.searchsorted(times, t)
+        return close.lerp(wide, ease((k - slow) / 22))
+
+    audio = Audio(t_all + hold + 5)
     scenes = []
-    t_title = 1.6
-    times = placement_times(t_title)
-    t_end_place = times[-1] + 0.4
-    hold = 2.8
+
+    def frame(img, d, t):
+        cam = camera(t)
+        started = [i for i in order if movers[i].t0 <= t]
+        h.draw(d, cam, standing=started)
+        tags = {i: guests[i].surname for i in order[:slow + NAMED_FAST]}
+        hall.draw_movers(d, cam, movers, colors, t, tags=tags if cam.z > 1.25 else None)
+        hall.mask_panel(d)
+        header(d, TITLE)
+        return len(started)
 
     def title(img, d, t, u):
-        header(d, TITLE)
-        draw_stage(d, 1.0)
-        a = ease_out_back(t / 0.5)
-        d.rounded_rectangle((CX - 400, CY - 160, CX + 400, CY + 160), radius=30, fill=(255, 255, 255),
-                            outline=INK, width=5)
-        text(d, (CX, CY), "フォーメーション\n説明会", int(96 * (0.5 + 0.5 * a)))
-        cap(d, "結婚式の余興です", sub="（新郎新婦にはナイショ）", pop=t / 0.3)
+        frame(img, d, t)
+        cap(d, "会場の席次です", pop=t / 0.3)
 
     scenes.append((t_title, title))
-    audio.pop(0.05, 440)
+    audio.pop(0.05, 520, 0.2)
 
-    zoom = {"z": 1.0, "last_n": 0, "bump_t": -9.0}
+    last = {"n": 0, "t": -9.0, "cap": None, "cap_t": -9.0}
 
     def placing(img, d, lt, u):
         t = t_title + lt
-        n = int(np.sum(times <= t))
-        if n != zoom["last_n"]:
-            zoom["bump_t"] = t
-            zoom["last_n"] = n
-        zoom["z"] += (zoom_for(n) - zoom["z"]) * 0.18  # カメラはなめらかに引く
-        z = zoom["z"]
-        header(d, TITLE)
-        draw_stage(d, z)
-        draw_people(d, times, t, z)
-        draw_counter(d, n, max(0.0, 1 - (t - zoom["bump_t"]) / 0.15))
-        if n == 0:
+        cnt = frame(img, d, t)
+        if cnt != last["n"]:
+            last["n"], last["t"] = cnt, t
+        if cnt == 0:
+            cap(d, "ダンスフロアに\n集まります", pop=lt / 0.3)
             return
-        k = n - 1
-        name, role = role_of(k)
-        if k < SLOW:
-            x, y = to_px(POS[k], z)
-            r = RW * UNIT * z
-            d.line((x, y - r - 12, x, y - r - 60), fill=(210, 30, 40), width=6)
-            d.polygon([(x - 14, y - r - 26), (x + 14, y - r - 26), (x, y - r - 6)], fill=(210, 30, 40))
-            cap(d, f"これが{name}さん" if k == 0 else f"こちら{name}さん", sub=f"（{role}）",
-                pop=(t - times[k]) / 0.25)
-        elif name:
-            cap(d, f"{name}さん\n（{role}）")
-        else:
-            cap(d, role)
+        draw_counter(d, cnt, max(0.0, 1 - (t - last["t"]) / 0.15))
+        k = cnt - 1
+        g = guests[order[k]]
+        sub = f"（{g.role}・{g.table}卓）" if g.role else f"（{g.table}卓）"
+        if k < slow:
+            cap(d, ("まず\n" if k == 0 else "続いて\n") + f"{g.name}さん", sub=sub, pop=(t - times[k]) / 0.25)
+        else:  # 速くなってからは, 読める程度にテロップの切り替えを間引く
+            if t - last["cap_t"] >= 0.2 or last["cap"] is None:
+                last["cap"], last["cap_t"] = (f"{g.name}さん", sub), t
+            cap(d, last["cap"][0], sub=last["cap"][1])
 
-    scenes.append((t_end_place - t_title, placing))
+    scenes.append((t_all - t_title, placing))
 
-    # 効果音: 最初は1人ずつポン, 速くなったらフレームごとにカチカチ (音程が上がっていく)
-    last = -1.0
-    for k, tk in enumerate(times):
-        if tk - last >= 0.07:
-            if k < 12:
-                audio.pop(tk, 520 * 1.05 ** k)
-            else:
-                audio.tick(tk, 900 + 8 * k, 0.22)
-            last = tk
+    prev = -1.0
+    for k, tk in enumerate(times):  # 立ち上がる音. 速くなったら間引いて, 音程を少しずつ上げる
+        if tk - prev >= 0.07:
+            audio.pop(tk, 520 * 1.04 ** min(k, 20), 0.25) if k < 12 else audio.tick(tk, 900 + 6 * k, 0.18)
+            prev = tk
 
-    def final(img, d, t, u):
-        z = zoom["z"] = zoom["z"] + (zoom_for(TOTAL) - zoom["z"]) * 0.18
-        header(d, TITLE)
-        draw_stage(d, z)
-        draw_people(d, times, 999, z)
-        draw_counter(d, TOTAL, 0)
-        cap(d, "以上、150名で\n踊ります！", sub="（招待客リストより）", pop=t / 0.3)
+    def final(img, d, lt, u):
+        t = t_all + lt
+        frame(img, d, t)
+        draw_counter(d, n, 0)
+        cap(d, f"以上 {n}名で\n踊ります", pop=lt / 0.3)
 
     scenes.append((hold, final))
-    audio.chime(t_end_place)
+    audio.chime(t_all, 0.2)
 
     if with_tsukkomi:
-        def punch(img, d, t, u):
-            final(img, d, hold, 1)
-            tsukkomi(img, t / 2.5, "参列者全員 参加させるんか！", base_size=120)
+        def punch(img, d, lt, u):
+            final(img, d, hold + lt, 1)
+            tsukkomi(img, lt / 2.5, "参列者全員 参加させるんか！", base_size=120)
 
         scenes.append((2.6, punch))
-        audio.don(t_end_place + hold)
+        audio.don(t_all + hold)
 
     total = render(scenes, out_path, audio, preview_times=previews)
-    print(f"wrote {out_path} ({total:.1f}s)")
+    print(f"wrote {out_path} ({total:.1f}s, {n}名)")
+
+
+def arg_value(flag, default):
+    if flag in sys.argv:
+        return sys.argv[sys.argv.index(flag) + 1]
+    return default
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    seat_path = arg_value("--seating", seating.DEFAULT_PATH)
+    args = [a for i, a in enumerate(sys.argv[1:], 1) if not a.startswith("--") and sys.argv[i - 1] != "--seating"]
     out = args[0] if args else "video1_formation.mp4"
-    build(out, with_tsukkomi="--tsukkomi" in sys.argv,
-          previews=[1.0, 3.5, 8.0, 9.5, 10.5, 11.5, 13.0, 15.0] if "--preview" in sys.argv else [])
+    build(out, seat_path, with_tsukkomi="--tsukkomi" in sys.argv,
+          previews=[1.0, 3.0, 4.5, 6.5, 9.5, 11.5, 13.0, 15.0, 18.0] if "--preview" in sys.argv else [])

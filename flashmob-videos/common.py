@@ -71,7 +71,7 @@ def caption(d, s, x=W / 2, y=H - 120, size=64, sub=None, pop=1.0, width=None):
                         radius=28, fill=(255, 255, 255), outline=INK, width=5)
     text(d, (x, y), s, size)
     if sub:
-        text(d, (x, box[3] + pad + 50), sub, 42, fill=(110, 100, 90))
+        text(d, (x, box[3] + pad + 22), sub, 42, fill=(110, 100, 90), anchor="ma")
 
 
 def header(d, s):
