@@ -1,6 +1,8 @@
 """動画3 (1本だけで見せる版): 席次表どおりの会場から3人が立ってダンスフロアへ → そのまま動画2 (イチョウ) へ.
 
-使い方: python3 video3_combined.py [出力.mp4] [--seating 席次表.xlsx] [--long] [--preview]
+使い方: python3 video3_combined.py [出力.mp4] [--seating 席次表.xlsx] [--style テイスト] [--long] [--preview]
+テイスト: picto (ピクトグラム) / mannequin (デッサン人形) / plush (ぬいぐるみ) / silhouette (シルエット) / real (リアル寄り)
+--style all で5種類まとめて書き出す.
 """
 import sys
 
@@ -11,13 +13,15 @@ from common import BG, H, W, Audio, caption, ease, header, render
 import hall
 import seating
 import video2_ginkgo as v2
+import figures
 
 
 def cap(d, s, **kw):
     caption(d, s, x=hall.PANEL_X, y=600, width=hall.PANEL_W, size=46, **kw)
 
 
-def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=()):
+def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=(), style="picto"):
+    v2.STYLE = style
     guests, tables = seating.load(seating_path)
     h = hall.Hall(guests, tables)
     picks = v2.choose_picks(guests)
@@ -91,10 +95,18 @@ def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=()):
     print(f"wrote {out_path} ({total:.1f}s)")
 
 
+def opt(flag, default):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else default
+
+
 if __name__ == "__main__":
-    seat_path = sys.argv[sys.argv.index("--seating") + 1] if "--seating" in sys.argv else seating.DEFAULT_PATH
-    args = [a for i, a in enumerate(sys.argv[1:], 1) if not a.startswith("--") and sys.argv[i - 1] != "--seating"]
+    seat_path = opt("--seating", seating.DEFAULT_PATH)
+    style = opt("--style", "picto")
+    args = [a for i, a in enumerate(sys.argv[1:], 1)
+            if not a.startswith("--") and sys.argv[i - 1] not in ("--seating", "--style")]
     long = "--long" in sys.argv
-    out = args[0] if args else ("video3_combined_long.mp4" if long else "video3_combined.mp4")
-    build(out, seat_path, long=long,
-          previews=[1.0, 3.0, 4.5, 6.5, 8.5, 10.0, 11.8, 12.6, 14.0, 20.0, 27.0, 31.0] if "--preview" in sys.argv else [])
+    for st in (figures.STYLES if style == "all" else [style]):
+        name = "video3_combined" + ("_long" if long else "") + ("" if st == "picto" else f"_{st}") + ".mp4"
+        out = args[0] if args and style != "all" else name
+        build(out, seat_path, long=long, style=st,
+              previews=[12.5, 14.0, 16.0, 18.5, 21.0, 30.0] if "--preview" in sys.argv else [])
