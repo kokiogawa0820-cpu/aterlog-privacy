@@ -545,7 +545,7 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
 
             add(1.8, to_bent, step(audio))
             src = bent
-        finish(add, audio, src, "そのまま\n組みます", mark, draw_order, final_color, tag, dur=1.4, lag=0.15)
+        finish(add, audio, src, "3人で\n形を作ります", mark, draw_order, final_color, tag, dur=1.4, lag=0.15)
 
     elif plan == "gradual":
         # 1つずつ, 少しずつおかしくなる
