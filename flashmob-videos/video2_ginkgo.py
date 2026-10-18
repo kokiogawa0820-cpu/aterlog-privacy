@@ -620,6 +620,11 @@ def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2, plan="stan
             cap(label, pop=t / 0.25)
         add(dur, fn, step(audio))
 
+    if plan != "standard":
+        plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, draw_order,
+                    final_color, tag, picks)
+        return scenes, tc[0]
+
     # --- ここまでは普通の動き (関節角度で動かすので無理がない)
     def natural1(img, d, t, u):
         for i in range(3):  # 肘を曲げながら上げる (途中で手が隣の人に当たらないように)
@@ -636,11 +641,6 @@ def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2, plan="stan
         cap("それぞれポーズをとります", pop=t / 0.25)
 
     add(2.1, natural2, step(audio))
-
-    if plan != "standard":
-        plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, draw_order,
-                    final_color, tag, picks)
-        return scenes, tc[0]
 
     last = poses
     if long:
