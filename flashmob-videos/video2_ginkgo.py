@@ -414,6 +414,10 @@ def pick_guests(seating_path=None):
 PLANS = {
     "standard": "両手を上げる → それぞれポーズ → 伸び縮み → 逆関節 → 巻きつけ",
     "sync": "全員で同じ振りを踊る → 決めポーズ → そのまま一気に組む",
+    "sync_pause": "sync + 組む前に「ここから形を作ります」と一拍おく",
+    "sync_huddle": "sync + 組む前に3人で寄る",
+    "sync_stretch": "sync + 組む前に体を伸ばす",
+    "sync_bend": "sync + 組む前に関節を逆に曲げる",
     "gradual": "両手を上げる → 腕・胴・膝・肘が少しずつおかしくなる → しなって巻きつけ",
     "onebyone": "両手を上げる → 手をつなぐ → 1人ずつ順番に形になる",
 }
@@ -495,7 +499,7 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
             draw_picto(d, build_pose(p), tag=tag(i), who=i)
         cap("両手を上げます", pop=t / 0.25)
 
-    if plan == "sync":
+    if plan.startswith("sync"):
         # 全員で同じ振り (右・左・右・左 → 頭の上で手を合わせる) → 決めポーズ → 一気に組む
         legs = dict(legL=(-20, -10), legR=(20, 10))
         right = [angles(x, tilt=170, armL=(175, 160), armR=(135, 150), **legs) for x in xs]
@@ -515,8 +519,32 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
         add(dur, dance, lambda t: [audio.tick(t + k * beat, 1300, 0.2) for k in range(len(keys) - 1)])
         final = [align(p, c) for p, c in zip(poses, clap)]
         move(clap, final, "決めポーズをとります", dur=1.8)
-        finish(add, audio, [build_pose(p) for p in final], "そのまま\n組みます", mark, draw_order, final_color, tag,
-               dur=1.4, lag=0.15)
+        src = [build_pose(p) for p in final]
+        cushion = plan.split("_", 1)[1] if "_" in plan else None  # 組む前のワンクッション
+        if cushion == "pause":
+            move(final, final, "ここから\n形を作ります", dur=1.6)
+        elif cushion == "huddle":
+            huddled = [dict(align(angles(x, armL=(-30, -10), armR=(30, 10)), p), cx=x)
+                       for x, p in zip([440, 540, 640], final)]
+            move(final, huddled, "3人で寄ります", dur=1.6)
+            src = [build_pose(p) for p in huddled]
+        elif cushion == "stretch":
+            tall = [dict(align(angles(p["cx"], armL=(-150, 200), armR=(150, -200)), p), armk=1.5, torsok=1.35)
+                    for p in final]
+            move(final, tall, "体を伸ばします", dur=1.6)
+            src = [build_pose(p) for p in tall]
+        elif cushion == "bend":
+            bent = [pose_bent(x, k=i * 0.9) for i, x in enumerate(xs)]
+            posed = src
+
+            def to_bent(img, d, t, u):
+                for i in range(3):
+                    draw_picto(d, interp_pose(posed[i], bent[i], u, lag=0.3), tag=tag(i), who=i)
+                cap("関節を逆に曲げます", pop=t / 0.25)
+
+            add(1.8, to_bent, step(audio))
+            src = bent
+        finish(add, audio, src, "そのまま\n組みます", mark, draw_order, final_color, tag, dur=1.4, lag=0.15)
 
     elif plan == "gradual":
         # 1つずつ, 少しずつおかしくなる
