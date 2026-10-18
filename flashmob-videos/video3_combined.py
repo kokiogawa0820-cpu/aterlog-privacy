@@ -1,6 +1,7 @@
 """動画3 (1本だけで見せる版): 席次表どおりの会場から3人が立ってダンスフロアへ → そのまま動画2 (イチョウ) へ.
 
-使い方: python3 video3_combined.py [出力.mp4] [--seating 席次表.xlsx] [--style テイスト] [--long] [--preview]
+使い方: python3 video3_combined.py [出力.mp4] [--seating 席次表.xlsx] [--style テイスト] [--plan 進行] [--long] [--preview]
+進行: standard / sync / gradual / onebyone (video2_ginkgo.PLANS). --plan all で4種類まとめて書き出す.
 テイスト: picto (ピクトグラム) / mannequin (デッサン人形) / plush (ぬいぐるみ) / silhouette (シルエット) / real (リアル寄り)
 --style all で5種類まとめて書き出す.
 """
@@ -20,7 +21,7 @@ def cap(d, s, **kw):
     caption(d, s, x=hall.PANEL_X, y=600, width=hall.PANEL_W, size=46, **kw)
 
 
-def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=(), style="picto"):
+def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=(), style="picto", plan="standard"):
     v2.STYLE = style
     guests, tables = seating.load(seating_path)
     h = hall.Hall(guests, tables)
@@ -75,7 +76,7 @@ def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=(), 
 
     # 動画2のシーン (フロアの3人 → ピクトグラムの3人)
     t_v2 = t_floor + t_trans
-    v2_scenes, _ = v2.make_scenes(audio, t0=t_v2, long=long, picks=picks, intro_dur=1.6)
+    v2_scenes, _ = v2.make_scenes(audio, t0=t_v2, long=long, picks=picks, intro_dur=1.6, plan=plan)
 
     def transition(img, d, lt, u):
         """フロアに寄りながら, 動画2の最初の画面へ切り替える."""
@@ -102,11 +103,14 @@ def opt(flag, default):
 if __name__ == "__main__":
     seat_path = opt("--seating", seating.DEFAULT_PATH)
     style = opt("--style", "picto")
+    plan = opt("--plan", "standard")
     args = [a for i, a in enumerate(sys.argv[1:], 1)
-            if not a.startswith("--") and sys.argv[i - 1] not in ("--seating", "--style")]
+            if not a.startswith("--") and sys.argv[i - 1] not in ("--seating", "--style", "--plan")]
     long = "--long" in sys.argv
     for st in (figures.STYLES if style == "all" else [style]):
-        name = "video3_combined" + ("_long" if long else "") + ("" if st == "picto" else f"_{st}") + ".mp4"
-        out = args[0] if args and style != "all" else name
-        build(out, seat_path, long=long, style=st,
-              previews=[12.5, 14.0, 16.0, 18.5, 21.0, 30.0] if "--preview" in sys.argv else [])
+        for pl in (list(v2.PLANS) if plan == "all" else [plan]):
+            name = ("video3_combined" + ("_long" if long else "") + ("" if st == "picto" else f"_{st}")
+                    + ("" if pl == "standard" else f"_{pl}") + ".mp4")
+            out = args[0] if args and "all" not in (style, plan) else name
+            build(out, seat_path, long=long, style=st, plan=pl,
+                  previews=[13.0, 14.5, 16.0, 17.5, 19.0, 20.5, 22.0, 24.0, 26.5] if "--preview" in sys.argv else [])

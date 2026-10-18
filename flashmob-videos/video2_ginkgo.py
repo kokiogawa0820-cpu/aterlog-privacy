@@ -82,11 +82,12 @@ def unit(deg):
 
 
 def angles(cx, tilt=180, armL=(-37, -9), armR=(37, 9), legL=(-14.5, -5), legR=(14.5, 5),
-           armk=1.0, bend=0.0, noodle=0.0):
+           armk=1.0, bend=0.0, noodle=0.0, torsok=1.0):
     """関節角度のパラメータ. 腰の高さは足が床に付くよう自動で決める.
-    armk: 腕の長さの倍率, bend: 胴のしなり (px), noodle: 腕のぐにゃり (px). 普通の人は 1, 0, 0."""
+    armk: 腕の長さの倍率, torsok: 胴の長さの倍率, bend: 胴のしなり (px), noodle: 腕のぐにゃり (px).
+    普通の人は 1, 1, 0, 0."""
     return {"cx": cx, "tilt": tilt, "armL": armL, "armR": armR, "legL": legL, "legR": legR,
-            "armk": armk, "bend": bend, "noodle": noodle}
+            "armk": armk, "bend": bend, "noodle": noodle, "torsok": torsok}
 
 
 def bow(pts, amount):
@@ -101,7 +102,7 @@ def bow(pts, amount):
 def build_pose(p):
     drop = max(LEN["thigh"] * unit(p[k][0])[1] + LEN["shin"] * unit(p[k][1])[1] for k in ("legL", "legR"))
     hip = np.array([p["cx"], FLOOR_Y - drop * S])
-    neck = hip + unit(p["tilt"]) * LEN["torso"] * S
+    neck = hip + unit(p["tilt"]) * LEN["torso"] * S * p["torsok"]
     torso = bow(resample([neck, hip]), p["bend"])
     q = {"torso": torso}
     for k, sgn in (("armL", 1), ("armR", -1)):
@@ -410,9 +411,167 @@ def pick_guests(seating_path=None):
         return None
 
 
-def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2):
+PLANS = {
+    "standard": "両手を上げる → それぞれポーズ → 伸び縮み → 逆関節 → 巻きつけ",
+    "sync": "全員で同じ振りを踊る → 決めポーズ → そのまま一気に組む",
+    "gradual": "両手を上げる → 腕・胴・膝・肘が少しずつおかしくなる → しなって巻きつけ",
+    "onebyone": "両手を上げる → 手をつなぐ → 1人ずつ順番に形になる",
+}
+
+
+def finish(add, audio, src, label, mark, draw_order, final_color, tag, dur=3.0, lag=0.35):
+    """最後の部分: src (点のポーズ) からマークの形へ → 一瞬止める → ゆっくり色が付いて東大マークが出る → 間.
+    src が None なら, もうマークの形になっている前提で止めるところから."""
+    def to_mark(img, d, t, u):
+        for i in draw_order:
+            q = mark[i] if src is None else interp_pose(src[i], mark[i], u, lag=lag)
+            draw_picto(d, q, tag=tag(i), who=i, tag_alpha=1 - clamp01(u / 0.4))
+        cap(label, pop=t / 0.25)
+
+    if src is not None:
+        add(dur, to_mark, step(audio))
+
+    def colored(img, d, v):
+        """色が付いてマークになる. v: 0→1."""
+        paste_mark(img, 540, 930, MARK_SIZE, alpha=0.55 * v)
+        d = ImageDraw.Draw(img)
+        for i in draw_order:
+            draw_picto(d, mark[i], who=i, tint=final_color[i], amt=v)
+        return d
+
+    def formed(img, d, t, u):
+        """形が完成したところで一瞬止める (まだ色は付かない)."""
+        colored(img, d, 0)
+        cap(label)
+
+    add(0.8, formed)
+
+    color_dur = 3.2
+
+    def logo_in(v):
+        """右側に東大マーク (文字付き) が浮き出てくる. v: 0→1."""
+        if v <= 0:
+            return
+        img = main()[0]
+        x0, y0 = PANEL_X - LOGO_W / 2, 170 + 40 * (1 - v)
+        h = LOGO_W * LOGO_ASPECT
+        card = Image.new("RGBA", (int(LOGO_W + 60), int(h + 50)), (255, 255, 255, int(235 * v)))
+        paste_logo(img, card, x0, y0, v)
+
+    def coloring(img, d, t, u):
+        v = ease(t / (color_dur - 0.3))
+        d = colored(img, d, v)
+        logo_in(v)
+        if t > 1.0:
+            cap("東京大学の\nイチョウマークです", pop=(t - 1.0) / 0.3)
+        else:
+            cap(label)
+
+    add(color_dur, coloring, lambda t: audio.chime(t + 1.0, 0.2))
+
+    def hold(img, d, t, u):
+        d = colored(img, d, 1)
+        logo_in(1)
+        cap("東京大学の\nイチョウマークです")
+
+    # 最後はそのまま止めておく (ここで撮影側がツッコミを入れる)
+    add(3.0, hold)
+
+
+def align(dst, src):
+    """dst の関節角度を, src から近い回り方になるよう ±360° ずらす (腕が一回転しないように)."""
+    out = dict(dst)
+    for k in ("armL", "armR", "legL", "legR"):
+        out[k] = tuple(b + 360 * round((a - b) / 360) for a, b in zip(src[k], dst[k]))
+    return out
+
+
+def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, draw_order, final_color, tag, picks):
+    """standard 以外の進行パターン. 関節の角度は, 動く途中で腕が大回りしないよう連続した値にしてある."""
+    def raise_arms(img, d, t, u):
+        for i in range(3):
+            v = clamp01(u * 1.5)
+            p = lerp_angles(stand[i], raising[i], v * 2) if v < 0.5 else lerp_angles(raising[i], tpose[i], v * 2 - 1)
+            draw_picto(d, build_pose(p), tag=tag(i), who=i)
+        cap("両手を上げます", pop=t / 0.25)
+
+    if plan == "sync":
+        # 全員で同じ振り (右・左・右・左 → 頭の上で手を合わせる) → 決めポーズ → 一気に組む
+        legs = dict(legL=(-20, -10), legR=(20, 10))
+        right = [angles(x, tilt=170, armL=(175, 160), armR=(135, 150), **legs) for x in xs]
+        left = [angles(x, tilt=190, armL=(225, 210), armR=(185, 200), **legs) for x in xs]
+        clap = [angles(x, armL=(200, 170), armR=(160, 190), **legs) for x in xs]
+        keys = [stand, right, left, right, left, clap]
+        beat = 0.5
+
+        def dance(img, d, t, u):
+            k = min(int(t / beat), len(keys) - 2)
+            f = clamp01((t - k * beat) / (beat * 0.7))
+            for i in range(3):
+                draw_picto(d, build_pose(lerp_angles(keys[k][i], keys[k + 1][i], f)), tag=tag(i), who=i)
+            cap("全員で\n同じ振りを踊ります", pop=t / 0.25)
+
+        dur = beat * (len(keys) - 1) + 0.6
+        add(dur, dance, lambda t: [audio.tick(t + k * beat, 1300, 0.2) for k in range(len(keys) - 1)])
+        final = [align(p, c) for p, c in zip(poses, clap)]
+        move(clap, final, "決めポーズをとります", dur=1.8)
+        finish(add, audio, [build_pose(p) for p in final], "そのまま\n組みます", mark, draw_order, final_color, tag,
+               dur=1.4, lag=0.15)
+
+    elif plan == "gradual":
+        # 1つずつ, 少しずつおかしくなる
+        add(1.9, raise_arms, step(audio))
+        g1 = [dict(p, armk=1.3) for p in tpose]
+        g2 = [dict(p, torsok=1.3) for p in g1]
+        g3 = [dict(p, legL=(14, -30), legR=(-14, 30)) for p in g2]
+        g4 = [dict(p, armL=(-140, 270), armR=(140, -270)) for p in g3]
+        g5 = [dict(p, armk=1.6, torsok=1.45, bend=80, noodle=60) for p in g4]
+        move(tpose, g1, "腕を少し\n長くします")
+        move(g1, g2, "胴を少し\n長くします")
+        move(g2, g3, "膝を少し\n逆に曲げます")
+        move(g3, g4, "肘を逆に\n曲げます")
+        move(g4, g5, "体をしならせます", dur=1.8)
+        finish(add, audio, [build_pose(p) for p in g5], "そのまま\n巻きつけます", mark, draw_order, final_color, tag)
+
+    elif plan == "onebyone":
+        # 手をつないでから, 1人ずつ順番に形になる (輪 → 青い葉 → 黄色い葉と茎)
+        add(1.9, raise_arms, step(audio))
+        hold = [dict(tpose[0], armL=(-150, 200), armR=(45, -313)),
+                dict(tpose[1], armL=(-45, 313), armR=(45, -313)),
+                dict(tpose[2], armL=(-45, 313), armR=(150, -200))]
+        move(tpose, hold, "手をつなぎます", dur=1.8)
+        held = [build_pose(p) for p in hold]
+        done = set()
+        parts = {2: "丸くなります", 1: "葉になります", 0: "葉と茎になります"}
+
+        def become(who):
+            def fn(img, d, t, u):
+                for i in draw_order:
+                    if i == who:
+                        draw_picto(d, interp_pose(held[i], mark[i], u, lag=0.35), tag=tag(i), who=i,
+                                   tag_alpha=1 - clamp01(u / 0.4))
+                    elif i in done:
+                        draw_picto(d, mark[i], who=i)
+                    else:
+                        draw_picto(d, held[i], tag=tag(i), who=i)
+                if u >= 0.999:
+                    done.add(who)
+                name = f"{picks[who].surname}さんが" if picks else ""
+                cap(f"{name}\n{parts[who]}", pop=t / 0.25)
+            return fn
+
+        for who in (2, 1, 0):
+            add(2.6, become(who), step(audio))
+        finish(add, audio, None, f"{picks[0].surname}さんが\n{parts[0]}" if picks else parts[0],
+               mark, draw_order, final_color, tag)
+    else:
+        raise ValueError(f"plan は {', '.join(PLANS)} のどれかです")
+
+
+def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2, plan="standard"):
     """動画2のシーン列を作る. 効果音は t0 秒からの位置に入れる. (scenes, 終了時刻) を返す.
-    long=True: 普通の動きを増やし, 「ちょっとだけ変」を経てから伸びるパートへ行く版."""
+    long=True: 普通の動きを増やし, 「ちょっとだけ変」を経てから伸びるパートへ行く版.
+    plan: 途中のポーズと進行のパターン (PLANS)."""
     xs = [230, 540, 850]
     stand = [angles(x) for x in xs]
     tpose = [angles(x, armL=(-140, 210), armR=(140, -210), legL=(-20, -10), legR=(20, 10)) for x in xs]
@@ -448,6 +607,19 @@ def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2):
 
     add(intro_dur, intro, step(audio))
 
+    def move(src, dst, label, dur=1.6, jiggle=0.0):
+        """関節角度のポーズ src → dst (人ごとのリスト) へ動く場面を足す."""
+        def fn(img, d, t, u):
+            for i in range(3):
+                p = lerp_angles(src[i], dst[i], u * 1.5)
+                if jiggle:
+                    w = math.sin(2 * math.pi * 2 * u) * math.sin(math.pi * u)
+                    p["bend"] += jiggle * w
+                    p["noodle"] += jiggle * 0.9 * w
+                draw_picto(d, build_pose(p), tag=tag(i), who=i)
+            cap(label, pop=t / 0.25)
+        add(dur, fn, step(audio))
+
     # --- ここまでは普通の動き (関節角度で動かすので無理がない)
     def natural1(img, d, t, u):
         for i in range(3):  # 肘を曲げながら上げる (途中で手が隣の人に当たらないように)
@@ -464,6 +636,11 @@ def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2):
         cap("それぞれポーズをとります", pop=t / 0.25)
 
     add(2.1, natural2, step(audio))
+
+    if plan != "standard":
+        plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, draw_order,
+                    final_color, tag, picks)
+        return scenes, tc[0]
 
     last = poses
     if long:
@@ -486,64 +663,13 @@ def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2):
 
     add(2.3, to_bent, step(audio))
 
-    def to_mark(img, d, t, u):
-        for i in draw_order:
-            draw_picto(d, interp_pose(bent[i], mark[i], u, lag=0.35), tag=tag(i), who=i, tag_alpha=1 - clamp01(u / 0.4))
-        cap("しならせて\n巻きつけます", pop=t / 0.25)
-
-    add(3.0, to_mark, step(audio))
-
-    def colored(img, d, v):
-        """色が付いてマークになる. v: 0→1."""
-        paste_mark(img, 540, 930, MARK_SIZE, alpha=0.55 * v)
-        d = ImageDraw.Draw(img)
-        for i in draw_order:
-            draw_picto(d, mark[i], who=i, tint=final_color[i], amt=v)
-        return d
-
-    def formed(img, d, t, u):
-        """形が完成したところで一瞬止める (まだ色は付かない)."""
-        colored(img, d, 0)
-        cap("しならせて\n巻きつけます")
-
-    add(0.8, formed)
-
-    color_dur = 3.2
-
-    def logo_in(v):
-        """右側に東大マーク (文字付き) が浮き出てくる. v: 0→1."""
-        if v <= 0:
-            return
-        img = main()[0]
-        x0, y0 = PANEL_X - LOGO_W / 2, 170 + 40 * (1 - v)
-        h = LOGO_W * LOGO_ASPECT
-        card = Image.new("RGBA", (int(LOGO_W + 60), int(h + 50)), (255, 255, 255, int(235 * v)))
-        paste_logo(img, card, x0, y0, v)
-
-    def coloring(img, d, t, u):
-        v = ease(t / (color_dur - 0.3))
-        d = colored(img, d, v)
-        logo_in(v)
-        if t > 1.0:
-            cap("東京大学の\nイチョウマークです", pop=(t - 1.0) / 0.3)
-        else:
-            cap("しならせて\n巻きつけます")
-
-    add(color_dur, coloring, lambda t: audio.chime(t + 1.0, 0.2))
-
-    def hold(img, d, t, u):
-        d = colored(img, d, 1)
-        logo_in(1)
-        cap("東京大学の\nイチョウマークです")
-
-    # 最後はそのまま止めておく (ここで撮影側がツッコミを入れる)
-    add(3.0, hold)
+    finish(add, audio, bent, "しならせて\n巻きつけます", mark, draw_order, final_color, tag)
     return scenes, tc[0]
 
 
-def build(out_path, previews=(), long=False, seating_path=None):
+def build(out_path, previews=(), long=False, seating_path=None, plan="standard"):
     audio = Audio(40)
-    scenes, _ = make_scenes(audio, long=long, picks=pick_guests(seating_path))
+    scenes, _ = make_scenes(audio, long=long, picks=pick_guests(seating_path), plan=plan)
     total = render(scenes, out_path, audio, preview_times=previews)
     print(f"wrote {out_path} ({total:.1f}s)")
 
