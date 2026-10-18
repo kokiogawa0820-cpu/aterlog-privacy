@@ -418,6 +418,7 @@ PLANS = {
     "sync_huddle": "sync + 組む前に3人で寄る",
     "sync_stretch": "sync + 組む前に体を伸ばす",
     "sync_bend": "sync + 組む前に関節を逆に曲げる",
+    "sync_greet": "全員で同じ振り → 会場に挨拶 (手を振る) → 3人で真ん中に寄る → 3人で形を作る",
     "gradual": "両手を上げる → 腕・胴・膝・肘が少しずつおかしくなる → しなって巻きつけ",
     "onebyone": "両手を上げる → 手をつなぐ → 1人ずつ順番に形になる",
 }
@@ -517,18 +518,36 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
 
         dur = beat * (len(keys) - 1) + 0.6
         add(dur, dance, lambda t: [audio.tick(t + k * beat, 1300, 0.2) for k in range(len(keys) - 1)])
-        final = [align(p, c) for p, c in zip(poses, clap)]
-        move(clap, final, "決めポーズをとります", dur=1.8)
-        src = [build_pose(p) for p in final]
         cushion = plan.split("_", 1)[1] if "_" in plan else None  # 組む前のワンクッション
+        end_tag = tag
+        if cushion == "greet":  # 決めポーズの代わりに, 会場に向かって片手を上げて手を振る
+            wave = [align(angles(x, tilt=177, armL=(-10, -4), armR=(118, 168), legL=(-5, -2), legR=(9, 3)), c)
+                    for x, c in zip(xs, clap)]
+
+            def greet(img, d, t, u):
+                for i in range(3):
+                    p = lerp_angles(clap[i], wave[i], u * 2.5)
+                    k = clamp01((u - 0.35) / 0.15)
+                    a, b = p["armR"]
+                    p["armR"] = (a, b + k * 16 * math.sin(2 * math.pi * 2.2 * t))
+                    draw_picto(d, build_pose(p), tag=tag(i), who=i)
+                cap("会場に\n挨拶します", pop=t / 0.25)
+
+            add(2.4, greet, step(audio))
+            final = wave
+        else:
+            final = [align(p, c) for p, c in zip(poses, clap)]
+            move(clap, final, "決めポーズをとります", dur=1.8)
+        src = [build_pose(p) for p in final]
         if cushion == "pause":
             move(final, final, "ここから\n形を作ります", dur=1.6)
-        elif cushion == "huddle":
+        elif cushion in ("huddle", "greet"):
             huddled = [dict(align(angles(x, armL=(-30, -10), armR=(30, 10)), p), cx=x)
                        for x, p in zip([440, 540, 640], final)]
-            move(final, huddled, "3人で寄ります", dur=1.6, fade_tags=True)  # 寄ると名札が重なるので消す
+            move(final, huddled, "3人で\n真ん中に寄ります" if cushion == "greet" else "3人で寄ります", dur=1.6,
+                 fade_tags=True)  # 寄ると名札が重なるので消す
             src = [build_pose(p) for p in huddled]
-            tag = lambda i: None  # noqa: E731
+            end_tag = lambda i: None  # noqa: E731  (寄った後は名札なし)
         elif cushion == "stretch":
             tall = [dict(align(angles(p["cx"], armL=(-150, 200), armR=(150, -200)), p), armk=1.5, torsok=1.35)
                     for p in final]
@@ -545,7 +564,7 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
 
             add(1.8, to_bent, step(audio))
             src = bent
-        finish(add, audio, src, "3人で\n形を作ります", mark, draw_order, final_color, tag, dur=1.4, lag=0.15)
+        finish(add, audio, src, "3人で\n形を作ります", mark, draw_order, final_color, end_tag, dur=1.4, lag=0.15)
 
     elif plan == "gradual":
         # 1つずつ, 少しずつおかしくなる
