@@ -419,6 +419,8 @@ PLANS = {
     "sync_stretch": "sync + 組む前に体を伸ばす",
     "sync_bend": "sync + 組む前に関節を逆に曲げる",
     "sync_greet": "全員で同じ振り → 会場に挨拶 (手を振る) → 3人で真ん中に寄る → 3人で形を作る",
+    "sync_greet_soft": "sync_greet + 寄る前に「関節をよーく柔らかくします」",
+    "sync_greet_warmup": "sync_greet + 寄る前に「手首と足首をほぐす → 肩を回す → 関節をよーく柔らかくする」",
     "gradual": "両手を上げる → 腕・胴・膝・肘が少しずつおかしくなる → しなって巻きつけ",
     "onebyone": "両手を上げる → 手をつなぐ → 1人ずつ順番に形になる",
 }
@@ -491,6 +493,78 @@ def align(dst, src):
     return out
 
 
+RELAX = dict(armL=(-25, -15), armR=(25, 15), legL=(-14.5, -5), legR=(14.5, 5))
+
+
+def _pose_scene(add, audio, label, dur, frame, tag):
+    """frame(i, t, u) → 関節角度のポーズ, を3人ぶん描く場面を足す."""
+    def fn(img, d, t, u):
+        for i in range(3):
+            draw_picto(d, build_pose(frame(i, t, u)), tag=tag(i), who=i)
+        cap(label, pop=t / 0.25)
+    add(dur, fn, step(audio))
+
+
+def add_wrists(add, audio, xs, prev, tag):
+    """手首と足首をぶらぶらさせてほぐす."""
+    base = [align(angles(x, **RELAX), p) for x, p in zip(xs, prev)]
+
+    def frame(i, t, u):
+        p = lerp_angles(prev[i], base[i], u * 4)
+        k = clamp01((u - 0.2) / 0.1) * (1 - clamp01((u - 0.9) / 0.1))
+        w = math.sin(2 * math.pi * 4 * t + i)
+        (a, b), (c, e) = p["armL"], p["armR"]
+        p["armL"], p["armR"] = (a, b + 22 * k * w), (c, e - 22 * k * w)
+        f, g = p["legR"]
+        p["legR"] = (f, g + 12 * k * math.sin(2 * math.pi * 4 * t + i + 1))
+        return p
+
+    _pose_scene(add, audio, "手首と足首を\nほぐします", 1.8, frame, tag)
+    return base
+
+
+def add_shoulders(add, audio, xs, prev, tag):
+    """指先を肩にのせて, 肩を大きく回す."""
+    start = [align(angles(x, armL=(-30, 130), armR=(30, -130)), p) for x, p in zip(xs, prev)]
+
+    def frame(i, t, u):
+        p = lerp_angles(prev[i], start[i], u * 5)
+        if u > 0.2:
+            r = 360 * clamp01((u - 0.2) / 0.75)
+            (a, b), (c, e) = start[i]["armL"], start[i]["armR"]
+            p["armL"], p["armR"] = (a - r, b - r), (c + r, e + r)
+        return p
+
+    _pose_scene(add, audio, "肩を回します", 2.2, frame, tag)
+    return start
+
+
+def add_soften(add, audio, xs, prev, tag):
+    """体じゅうをぐにゃぐにゃ揺らして, 関節をよーく柔らかくする. 最後は少しぐにゃっとしたまま."""
+    base = [align(angles(x, **RELAX), p) for x, p in zip(xs, prev)]
+    soft = [dict(b, bend=35, noodle=40, armk=1.15) for b in base]
+
+    def frame(i, t, u):
+        p = lerp_angles(prev[i], base[i], u * 4)
+        s = ease(u)
+        for k in ("bend", "noodle", "armk"):
+            p[k] = base[i][k] + (soft[i][k] - base[i][k]) * s
+        amp = math.sin(math.pi * u) * (0.4 + 0.6 * u)
+        w1 = math.sin(2 * math.pi * 2.4 * t + i * 1.3)
+        w2 = math.sin(2 * math.pi * 2.4 * t + i * 1.3 + 1.2)
+        p["bend"] += 75 * amp * w1
+        p["noodle"] += 65 * amp * w2
+        (a, b), (c, e) = p["armL"], p["armR"]
+        p["armL"], p["armR"] = (a + 25 * amp * w1, b + 45 * amp * w2), (c - 25 * amp * w1, e - 45 * amp * w2)
+        for k, sg in (("legL", 1), ("legR", -1)):
+            f, g = p[k]
+            p[k] = (f, g + sg * 14 * amp * w2)
+        return p
+
+    _pose_scene(add, audio, "関節を\nよーく柔らかくします", 3.0, frame, tag)
+    return soft
+
+
 def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, draw_order, final_color, tag, picks):
     """standard 以外の進行パターン. 関節の角度は, 動く途中で腕が大回りしないよう連続した値にしてある."""
     def raise_arms(img, d, t, u):
@@ -518,9 +592,9 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
 
         dur = beat * (len(keys) - 1) + 0.6
         add(dur, dance, lambda t: [audio.tick(t + k * beat, 1300, 0.2) for k in range(len(keys) - 1)])
-        cushion = plan.split("_", 1)[1] if "_" in plan else None  # 組む前のワンクッション
+        cushion = plan.split("_", 1)[1] if "_" in plan else ""  # 組む前のワンクッション
         end_tag = tag
-        if cushion == "greet":  # 決めポーズの代わりに, 会場に向かって片手を上げて手を振る
+        if cushion.startswith("greet"):  # 決めポーズの代わりに, 会場に向かって手を振る
             wave = [align(angles(x, tilt=177, armL=(-10, -4), armR=(118, 168), legL=(-5, -2), legR=(9, 3)), c)
                     for x, c in zip(xs, clap)]
 
@@ -535,16 +609,23 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
 
             add(2.4, greet, step(audio))
             final = wave
+            if cushion == "greet_warmup":
+                final = add_wrists(add, audio, xs, final, tag)
+                final = add_shoulders(add, audio, xs, final, tag)
+            if cushion in ("greet_soft", "greet_warmup"):
+                final = add_soften(add, audio, xs, final, tag)
         else:
             final = [align(p, c) for p, c in zip(poses, clap)]
             move(clap, final, "決めポーズをとります", dur=1.8)
         src = [build_pose(p) for p in final]
         if cushion == "pause":
             move(final, final, "ここから\n形を作ります", dur=1.6)
-        elif cushion in ("huddle", "greet"):
+        elif cushion == "huddle" or cushion.startswith("greet"):
             huddled = [dict(align(angles(x, armL=(-30, -10), armR=(30, 10)), p), cx=x)
                        for x, p in zip([440, 540, 640], final)]
-            move(final, huddled, "3人で\n真ん中に寄ります" if cushion == "greet" else "3人で寄ります", dur=1.6,
+            for h, p in zip(huddled, final):  # 柔らかくした後なら, そのぐにゃっと感を残す
+                h.update(bend=p["bend"], noodle=p["noodle"], armk=p["armk"])
+            move(final, huddled, "3人で\n真ん中に寄ります" if cushion.startswith("greet") else "3人で寄ります", dur=1.6,
                  fade_tags=True)  # 寄ると名札が重なるので消す
             src = [build_pose(p) for p in huddled]
             end_tag = lambda i: None  # noqa: E731  (寄った後は名札なし)
