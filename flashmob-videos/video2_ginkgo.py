@@ -526,8 +526,9 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
         elif cushion == "huddle":
             huddled = [dict(align(angles(x, armL=(-30, -10), armR=(30, 10)), p), cx=x)
                        for x, p in zip([440, 540, 640], final)]
-            move(final, huddled, "3人で寄ります", dur=1.6)
+            move(final, huddled, "3人で寄ります", dur=1.6, fade_tags=True)  # 寄ると名札が重なるので消す
             src = [build_pose(p) for p in huddled]
+            tag = lambda i: None  # noqa: E731
         elif cushion == "stretch":
             tall = [dict(align(angles(p["cx"], armL=(-150, 200), armR=(150, -200)), p), armk=1.5, torsok=1.35)
                     for p in final]
@@ -635,8 +636,8 @@ def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2, plan="stan
 
     add(intro_dur, intro, step(audio))
 
-    def move(src, dst, label, dur=1.6, jiggle=0.0):
-        """関節角度のポーズ src → dst (人ごとのリスト) へ動く場面を足す."""
+    def move(src, dst, label, dur=1.6, jiggle=0.0, fade_tags=False):
+        """関節角度のポーズ src → dst (人ごとのリスト) へ動く場面を足す. fade_tags: 名札を消していく."""
         def fn(img, d, t, u):
             for i in range(3):
                 p = lerp_angles(src[i], dst[i], u * 1.5)
@@ -644,7 +645,7 @@ def make_scenes(audio, t0=0.0, long=False, picks=None, intro_dur=2.2, plan="stan
                     w = math.sin(2 * math.pi * 2 * u) * math.sin(math.pi * u)
                     p["bend"] += jiggle * w
                     p["noodle"] += jiggle * 0.9 * w
-                draw_picto(d, build_pose(p), tag=tag(i), who=i)
+                draw_picto(d, build_pose(p), tag=tag(i), who=i, tag_alpha=1 - clamp01(u / 0.5) if fade_tags else 1)
             cap(label, pop=t / 0.25)
         add(dur, fn, step(audio))
 
