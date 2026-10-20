@@ -82,12 +82,12 @@ def unit(deg):
 
 
 def angles(cx, tilt=180, armL=(-37, -9), armR=(37, 9), legL=(-14.5, -5), legR=(14.5, 5),
-           armk=1.0, bend=0.0, noodle=0.0, torsok=1.0):
+           armk=1.0, bend=0.0, noodle=0.0, torsok=1.0, lift=0.0, wave=0.0):
     """関節角度のパラメータ. 腰の高さは足が床に付くよう自動で決める.
     armk: 腕の長さの倍率, torsok: 胴の長さの倍率, bend: 胴のしなり (px), noodle: 腕のぐにゃり (px).
     普通の人は 1, 1, 0, 0."""
     return {"cx": cx, "tilt": tilt, "armL": armL, "armR": armR, "legL": legL, "legR": legR,
-            "armk": armk, "bend": bend, "noodle": noodle, "torsok": torsok}
+            "armk": armk, "bend": bend, "noodle": noodle, "torsok": torsok, "lift": lift, "wave": wave}
 
 
 def bow(pts, amount):
@@ -101,7 +101,7 @@ def bow(pts, amount):
 
 def build_pose(p):
     drop = max(LEN["thigh"] * unit(p[k][0])[1] + LEN["shin"] * unit(p[k][1])[1] for k in ("legL", "legR"))
-    hip = np.array([p["cx"], FLOOR_Y - drop * S])
+    hip = np.array([p["cx"], FLOOR_Y - drop * S - p.get("lift", 0.0)])  # lift: ジャンプで浮く高さ
     neck = hip + unit(p["tilt"]) * LEN["torso"] * S * p["torsok"]
     torso = bow(resample([neck, hip]), p["bend"])
     q = {"torso": torso}
@@ -423,6 +423,8 @@ PLANS = {
     "sync_greet": "全員で同じ振り → 会場に挨拶 (手を振る) → 3人で真ん中に寄る → 3人で形を作る",
     "sync_greet_soft": "sync_greet + 寄る前に「関節をよーく柔らかくします」",
     "sync_greet_warmup": "sync_greet + 寄る前に「手首と足首をほぐす → 肩を回す → 関節をよーく柔らかくする」",
+    "routine_soft": "覚える振り付け (手拍子 → ウェーブ → サイドステップ → ジャンプ) → 順番に挨拶 → 3人で挨拶"
+                    " → 関節をよーく柔らかく → 3人で真ん中に寄る → 3人で形を作る",
     "gradual": "両手を上げる → 腕・胴・膝・肘が少しずつおかしくなる → しなって巻きつけ",
     "onebyone": "両手を上げる → 手をつなぐ → 1人ずつ順番に形になる",
 }
@@ -567,6 +569,87 @@ def add_soften(add, audio, xs, prev, tag):
     return soft
 
 
+BEAT = 0.45  # 振り付けの1拍 (秒)
+
+
+def add_routine_part(add, audio, label, keys, tag, offsets=(0, 0, 0), sub=None):
+    """拍ごとのポーズ keys[拍][人] を順に踊る場面を足す. offsets: 人ごとの遅れ (拍). ずらすとウェーブになる.
+    ポーズに wave があれば, その拍のあいだ前腕を左右に振る (手を振る)."""
+    seqs = []
+    for i in range(3):  # 腕が一回転しないよう, 人ごとに前の拍から近い角度にそろえる
+        seq = [keys[0][i]]
+        for k in keys[1:]:
+            seq.append(align(k[i], seq[-1]))
+        seqs.append(seq)
+    n = len(keys)
+    dur = BEAT * (n - 1 + max(offsets)) + 0.3
+
+    def fn(img, d, t, u):
+        for i in range(3):
+            b = t / BEAT - offsets[i]
+            k = int(min(max(b, 0), n - 1.001))
+            f = clamp01((b - k) / 0.7)
+            nxt = seqs[i][min(k + 1, n - 1)]
+            p = lerp_angles(seqs[i][k], nxt, f)
+            if nxt["wave"]:
+                w = nxt["wave"] * math.sin(2 * math.pi * 3 * t)
+                (a, c), (e, g) = p["armL"], p["armR"]
+                p["armL"], p["armR"] = (a, c - w * (a < -60)), (e, g + w * (e > 60))
+            draw_picto(d, build_pose(p), tag=tag(i), who=i)
+        cap(label, sub=sub, pop=t / 0.25)
+
+    add(dur, fn, lambda t0: [audio.tick(t0 + k * BEAT, 1500 if k % 4 == 0 else 1100, 0.18)
+                             for k in range(int(dur / BEAT))])
+    return [seqs[i][-1] for i in range(3)]
+
+
+def add_routine(add, audio, xs, tag):
+    """覚えがいのある振り付け (4パート). 最後のポーズを返す."""
+    def each(fn):
+        return [fn(i, x) for i, x in enumerate(xs)]
+
+    legs = dict(legL=(-16, -6), legR=(16, 6))
+    bounce = dict(legL=(-28, 6), legR=(28, -6))  # 膝で軽くリズムをとる
+    open_v = each(lambda i, x: angles(x, armL=(-135, -150), armR=(135, 150), **legs))
+    clap = each(lambda i, x: angles(x, armL=(200, 170), armR=(160, 190), **bounce))
+    stand = each(lambda i, x: angles(x, **RELAX))
+    k1 = [stand, open_v, clap, open_v, clap, open_v, clap, clap]
+    last = add_routine_part(add, audio, "振り付け①\n手拍子", k1, tag)
+
+    low = each(lambda i, x: angles(x, armL=(-45, -35), armR=(45, 35), **legs))
+    up = each(lambda i, x: angles(x, armL=(-172, -178), armR=(172, 178), **legs))
+    k2 = [last, low, up, low, up, low]
+    last = add_routine_part(add, audio, "振り付け②\nウェーブ", k2, tag, offsets=(0, 0.7, 1.4),
+                            sub="（左の人から順番に）")
+
+    def side(dx):
+        sg = 1 if dx > 0 else -1
+        return each(lambda i, x: angles(x + dx, tilt=180 - 8 * sg, armL=(-25 if sg > 0 else -100, -10 if sg > 0 else -95),
+                                       armR=(100 if sg > 0 else 25, 95 if sg > 0 else 10),
+                                       legL=(-24, -12), legR=(24, 12)))
+    center = each(lambda i, x: angles(x, armL=(-30, -15), armR=(30, 15), **legs))
+    k3 = [last, side(60), center, side(-60), center, side(60), center, side(-60), center]
+    last = add_routine_part(add, audio, "振り付け③\nサイドステップ", k3, tag)
+
+    crouch = each(lambda i, x: angles(x, armL=(-25, -15), armR=(25, 15), legL=(-48, 22), legR=(48, -22)))
+    jump = each(lambda i, x: angles(x, armL=(-150, 200), armR=(150, -200), legL=(-6, -3), legR=(6, 3), lift=70))
+    land = each(lambda i, x: angles(x, armL=(-140, 210), armR=(140, -210), legL=(-30, 10), legR=(30, -10)))
+    k4 = [last, crouch, jump, land, land]
+    return add_routine_part(add, audio, "振り付け④\nジャンプ", k4, tag)
+
+
+def add_greeting(add, audio, xs, prev, tag):
+    """会場に挨拶: 左の人から順番に片手で手を振る → 最後に3人そろって両手で振る."""
+    rest = [angles(x, **RELAX) for x in xs]
+    one = [angles(x, tilt=177, armL=(-10, -4), armR=(118, 168), legL=(-5, -2), legR=(9, 3), wave=18) for x in xs]
+    both = [angles(x, armL=(-118, -168), armR=(118, 168), legL=(-12, -5), legR=(12, 5), wave=18) for x in xs]
+    keys = [prev, rest]
+    for who in range(3):  # 2拍ずつ順番に
+        keys += [[one[i] if i == who else rest[i] for i in range(3)]] * 2
+    keys += [rest, both, both, both, both]
+    return add_routine_part(add, audio, "会場に\n挨拶します", keys, tag, sub="（順番に → 3人で）")
+
+
 def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, draw_order, final_color, tag, picks):
     """standard 以外の進行パターン. 関節の角度は, 動く途中で腕が大回りしないよう連続した値にしてある."""
     def raise_arms(img, d, t, u):
@@ -648,6 +731,16 @@ def plan_scenes(plan, add, move, audio, xs, stand, raising, tpose, poses, mark, 
             add(1.8, to_bent, step(audio))
             src = bent
         finish(add, audio, src, "3人で\n形を作ります", mark, draw_order, final_color, end_tag, dur=1.4, lag=0.15)
+
+    elif plan == "routine_soft":
+        final = add_routine(add, audio, xs, tag)
+        final = add_greeting(add, audio, xs, final, tag)
+        final = add_soften(add, audio, xs, final, tag)
+        huddled = [dict(align(angles(x, armL=(-30, -10), armR=(30, 10)), p), cx=x, bend=p["bend"],
+                        noodle=p["noodle"], armk=p["armk"]) for x, p in zip([440, 540, 640], final)]
+        move(final, huddled, "3人で\n真ん中に寄ります", dur=1.6, fade_tags=True)
+        finish(add, audio, [build_pose(p) for p in huddled], "3人で\n形を作ります", mark, draw_order, final_color,
+               lambda i: None, dur=1.4, lag=0.15)
 
     elif plan == "gradual":
         # 1つずつ, 少しずつおかしくなる
