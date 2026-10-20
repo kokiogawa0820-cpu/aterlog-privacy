@@ -230,6 +230,7 @@ def interp_pose(a, b, u, lag=0.25):
 
 STYLE = "picto"  # 人型のテイスト (figures.STYLES のどれか)
 OUTFITS = ["suit", "suit", "suit"]  # リアル寄り・シルエットの服装 (suit / dress). data/picks.txt で指定
+INTROS = ["", "", ""]  # 呼び出すときの紹介文 (例: 「〇〇部主将」). data/picks.txt で指定
 
 
 def draw_picto(d, q, color=PICTO, tag=None, tag_alpha=1.0, who=0, tint=None, amt=0.0):
@@ -391,12 +392,13 @@ PICK_TABLES = ["A", "C", "B"]
 
 def choose_picks(guests):
     import seating
-    if os.path.exists(PICKS_PATH):  # 1行に「名前」または「名前,服装 (suit/dress)」
+    if os.path.exists(PICKS_PATH):  # 1行に「名前」または「名前,服装 (suit/dress/空),紹介文」
         with open(PICKS_PATH, encoding="utf-8") as f:
             rows = [[x.strip() for x in line.split(",")] for line in f if line.strip()][:3]
         for k, r in enumerate(rows):
             if len(r) > 1 and r[1] in ("suit", "dress"):
                 OUTFITS[k] = r[1]
+            INTROS[k] = r[2] if len(r) > 2 else ""
         return [seating.find(guests, r[0]) for r in rows]
     return [next(g for g in guests if g.table == t) for t in PICK_TABLES]
 

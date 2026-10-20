@@ -17,8 +17,8 @@ import video2_ginkgo as v2
 import figures
 
 
-def cap(d, s, **kw):
-    caption(d, s, x=hall.PANEL_X, y=600, width=hall.PANEL_W, size=46, **kw)
+def cap(d, s, size=46, **kw):
+    caption(d, s, x=hall.PANEL_X, y=600, width=hall.PANEL_W, size=size, **kw)
 
 
 def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=(), style="picto", plan="standard"):
@@ -65,7 +65,10 @@ def build(out_path, seating_path=seating.DEFAULT_PATH, long=False, previews=(), 
             cap(d, "3名に前へ\n出ていただきます", pop=lt / 0.3)
         elif t < t_starts[-1] + each:
             g = picks[k]
-            cap(d, f"{g.name}さん", sub=f"（{g.role}・{g.table}卓）", pop=(t - t_starts[k]) / 0.25)
+            if v2.INTROS[k]:  # 紹介文があれば「紹介文 / 〇〇様」
+                cap(d, f"{v2.INTROS[k]}\n{g.name}様", size=42, pop=(t - t_starts[k]) / 0.25)
+            else:
+                cap(d, f"{g.name}さん", sub=f"（{g.role}・{g.table}卓）", pop=(t - t_starts[k]) / 0.25)
         else:
             cap(d, "この3名で\n1つの形を作ります", pop=(t - t_starts[-1] - each) / 0.3)
 
